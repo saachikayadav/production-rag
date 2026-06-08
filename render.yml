@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: production-langgraph-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RATE_LIMIT
+        value: "20/minute"
+      - key: CACHE_TTL_SECONDS
+        value: "300"
+      - key: MAX_RETRIES
+        value: "3"
+      - key: PRIMARY_MODEL
+        value: meta-llama/llama-3.2-3b-instruct:free
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "true"
+      - key: LANGSMITH_PROJECT
+        value: production-langgraph-api
+    autoDeploy: true
