@@ -1,0 +1,470 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--indigo:#5B63D6;--indigo-light:#EEF0FF;--indigo-border:#C7CAFF;--em:#10B981;--em-light:#ECFDF5;--amber:#F59E0B;--amber-light:#FFFBEB;--red:#EF4444;--mono:ui-monospace,monospace}
+body{font-family:var(--font-sans,system-ui,sans-serif);background:transparent;color:var(--text-primary)}
+
+.shell{display:grid;grid-template-rows:auto auto 1fr auto;gap:0;min-height:680px;border:0.5px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface-2)}
+
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:0.5px solid var(--border);background:var(--surface-2)}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{width:28px;height:28px;border-radius:8px;background:var(--indigo);display:flex;align-items:center;justify-content:center}
+.logo-icon i{color:#fff;font-size:14px}
+.logo-name{font-size:14px;font-weight:500;color:var(--text-primary)}
+.logo-name span{color:var(--text-secondary);font-weight:400}
+.badges{display:flex;gap:6px;align-items:center}
+.badge{font-size:11px;padding:2px 8px;border-radius:var(--radius);border:0.5px solid;font-weight:500}
+.badge-indigo{background:var(--indigo-light);color:var(--indigo);border-color:var(--indigo-border)}
+.badge-green{background:var(--em-light);color:#059669;border-color:#A7F3D0}
+.badge-gray{background:var(--surface-1);color:var(--text-secondary);border-color:var(--border)}
+.nav-tabs{display:flex;gap:0;border-bottom:0.5px solid var(--border);background:var(--surface-1)}
+.tab{padding:9px 18px;font-size:13px;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-secondary);transition:all .15s;user-select:none}
+.tab.active{color:var(--indigo);border-bottom-color:var(--indigo);background:var(--surface-2)}
+.tab:hover:not(.active){color:var(--text-primary)}
+
+.content{display:none;padding:0}
+.content.active{display:block}
+
+/* CHAT TAB */
+.chat-layout{display:grid;grid-template-columns:1fr 280px;height:560px;gap:0}
+.chat-main{display:flex;flex-direction:column;border-right:0.5px solid var(--border)}
+.chat-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px;scroll-behavior:smooth}
+.msg{display:flex;flex-direction:column;gap:4px;max-width:90%}
+.msg.user{align-self:flex-end;align-items:flex-end}
+.msg.ai{align-self:flex-start;align-items:flex-start}
+.msg-bubble{padding:10px 14px;border-radius:12px;font-size:14px;line-height:1.5}
+.msg.user .msg-bubble{background:var(--indigo);color:#fff;border-bottom-right-radius:4px}
+.msg.ai .msg-bubble{background:var(--surface-1);border:0.5px solid var(--border);border-bottom-left-radius:4px;color:var(--text-primary)}
+.msg-meta{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--text-secondary)}
+.meta-chip{padding:2px 6px;border-radius:4px;font-size:10px;font-weight:500}
+.chip-cached{background:var(--em-light);color:#059669}
+.chip-miss{background:var(--amber-light);color:#B45309}
+.chip-model{background:var(--indigo-light);color:var(--indigo)}
+.typing-dots{display:flex;gap:4px;align-items:center;padding:4px 0}
+.typing-dots span{width:6px;height:6px;border-radius:50%;background:var(--text-muted);animation:bounce .9s infinite}
+.typing-dots span:nth-child(2){animation-delay:.15s}
+.typing-dots span:nth-child(3){animation-delay:.3s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+.chat-input-row{padding:12px 16px;border-top:0.5px solid var(--border);display:flex;gap:8px;align-items:center}
+.chat-input{flex:1;padding:9px 14px;border:0.5px solid var(--border-strong);border-radius:var(--radius);font-size:14px;background:var(--surface-2);color:var(--text-primary);outline:none}
+.chat-input:focus{border-color:var(--indigo)}
+.send-btn{padding:8px 16px;background:var(--indigo);color:#fff;border:none;border-radius:var(--radius);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;transition:opacity .15s}
+.send-btn:hover{opacity:.9}
+.send-btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* RIGHT PANEL */
+.right-panel{display:flex;flex-direction:column;overflow-y:auto}
+.panel-section{padding:16px;border-bottom:0.5px solid var(--border)}
+.panel-title{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);margin-bottom:12px}
+.status-row{display:flex;align-items:center;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.status-row:last-child{margin-bottom:0}
+.status-label{color:var(--text-secondary)}
+.status-val{font-weight:500;color:var(--text-primary)}
+.dot-green{width:7px;height:7px;border-radius:50%;background:var(--em);display:inline-block;margin-right:5px}
+.health-badge{display:inline-flex;align-items:center;font-size:12px;font-weight:500;color:#059669}
+
+/* PIPELINE */
+.pipeline{padding:16px}
+.pipe-step{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;color:var(--text-muted);transition:color .2s}
+.pipe-step.done{color:var(--em)}
+.pipe-step.active{color:var(--indigo);font-weight:500}
+.pipe-step.fail{color:var(--red)}
+.pipe-icon{width:18px;height:18px;border-radius:50%;border:1.5px solid currentColor;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s}
+.pipe-step.done .pipe-icon{background:var(--em);border-color:var(--em)}
+.pipe-step.done .pipe-icon i{color:#fff;font-size:10px}
+.pipe-step.active .pipe-icon{border-color:var(--indigo);animation:pulse-ring .8s infinite}
+.pipe-step.fail .pipe-icon{background:var(--red);border-color:var(--red)}
+.pipe-step.fail .pipe-icon i{color:#fff;font-size:10px}
+@keyframes pulse-ring{0%{box-shadow:0 0 0 0 rgba(91,99,214,.4)}70%{box-shadow:0 0 0 6px rgba(91,99,214,0)}100%{box-shadow:0 0 0 0 rgba(91,99,214,0)}}
+.pipe-connector{width:1.5px;height:8px;background:var(--border);margin-left:8px}
+.pipe-time{margin-left:auto;font-size:10px;color:var(--text-muted)}
+
+/* INSPECTOR */
+.inspector{padding:16px;flex:1}
+.insp-title{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);margin-bottom:10px}
+.insp-row{display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:0.5px solid var(--border)}
+.insp-row:last-child{border-bottom:none}
+.insp-label{color:var(--text-secondary)}
+.insp-pass{color:var(--em);font-weight:500}
+.insp-fail{color:var(--red);font-weight:500}
+.insp-skip{color:var(--text-muted)}
+.insp-total{margin-top:10px;padding:8px 10px;background:var(--surface-1);border-radius:var(--radius);font-size:12px;display:flex;justify-content:space-between}
+.insp-total-label{color:var(--text-secondary)}
+.insp-total-val{font-weight:500;color:var(--text-primary)}
+
+/* METRICS TAB */
+.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px}
+.metric-card{background:var(--surface-1);border-radius:var(--radius);padding:14px;text-align:left}
+.metric-label{font-size:11px;color:var(--text-secondary);margin-bottom:6px}
+.metric-val{font-size:22px;font-weight:500;color:var(--text-primary)}
+.metric-sub{font-size:11px;color:var(--text-muted);margin-top:3px}
+.chart-area{padding:0 20px 20px}
+.chart-title{font-size:12px;font-weight:500;color:var(--text-secondary);margin-bottom:10px}
+.bar-chart{display:flex;align-items:flex-end;gap:4px;height:100px;border-bottom:0.5px solid var(--border);padding-bottom:0}
+.bar{flex:1;border-radius:3px 3px 0 0;transition:opacity .2s;min-width:0}
+.bar:hover{opacity:.75}
+.bar-labels{display:flex;gap:4px;margin-top:4px}
+.bar-lbl{flex:1;font-size:9px;color:var(--text-muted);text-align:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 20px 20px}
+
+/* SECURITY TAB */
+.security-layout{padding:20px;display:flex;flex-direction:column;gap:16px}
+.sec-header{font-size:13px;color:var(--text-secondary);line-height:1.5}
+.sec-btns{display:flex;gap:8px;flex-wrap:wrap}
+.sec-btn{padding:8px 16px;border-radius:var(--radius);font-size:13px;font-weight:500;cursor:pointer;border:0.5px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);transition:all .15s}
+.sec-btn:hover{background:var(--surface-1)}
+.sec-btn.danger{border-color:#FCA5A5;color:var(--red);background:#FEF2F2}
+.sec-btn.danger:hover{background:#FEE2E2}
+.sec-result{min-height:100px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--surface-1);padding:16px;font-size:13px;line-height:1.6;display:none}
+.sec-result.show{display:block}
+.sec-blocked{color:var(--red);font-weight:500;display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:14px}
+.sec-pii-demo{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pii-box{padding:12px;background:var(--surface-2);border-radius:var(--radius);border:0.5px solid var(--border);font-size:12px;font-family:var(--mono);line-height:1.6}
+.pii-label{font-size:10px;color:var(--text-secondary);margin-bottom:6px;font-family:var(--font-sans)}
+.pii-redact{background:var(--indigo);color:#fff;border-radius:3px;padding:0 3px}
+
+/* HEALTH TAB */
+.health-layout{padding:20px;display:flex;flex-direction:column;gap:16px}
+.health-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.health-card{background:var(--surface-1);border-radius:var(--radius);padding:16px}
+.hc-name{font-size:12px;color:var(--text-secondary);margin-bottom:6px}
+.hc-status{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:500}
+.hc-online{color:#059669}
+.hc-detail{font-size:11px;color:var(--text-muted);margin-top:4px}
+.env-card{background:var(--indigo-light);border:0.5px solid var(--indigo-border);border-radius:var(--radius);padding:16px;display:flex;justify-content:space-between;align-items:center}
+.env-label{font-size:12px;color:var(--indigo);margin-bottom:4px}
+.env-val{font-size:18px;font-weight:500;color:var(--indigo)}
+</style>
+
+<h2 class="sr-only">Production AI Platform Dashboard — chat interface, metrics, security demos, and system health</h2>
+
+<div class="shell">
+  <div class="topbar">
+    <div class="logo">
+      <div class="logo-icon"><i class="ti ti-cpu" aria-hidden="true"></i></div>
+      <div class="logo-name">Inference Platform <span>/ Production</span></div>
+    </div>
+    <div class="badges">
+      <span class="badge badge-green"><i class="ti ti-circle-check" style="font-size:10px;margin-right:3px" aria-hidden="true"></i>All systems healthy</span>
+      <span class="badge badge-indigo">LangGraph 0.2</span>
+      <span class="badge badge-gray">v1.0.0</span>
+    </div>
+  </div>
+
+  <div class="nav-tabs" role="tablist">
+    <div class="tab active" role="tab" onclick="switchTab('chat',this)">Chat</div>
+    <div class="tab" role="tab" onclick="switchTab('metrics',this)">Metrics</div>
+    <div class="tab" role="tab" onclick="switchTab('security',this)">Security</div>
+    <div class="tab" role="tab" onclick="switchTab('health',this)">Health</div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="content active" id="tab-chat">
+    <div class="chat-layout">
+      <div class="chat-main">
+        <div class="chat-messages" id="chat-messages">
+          <div class="msg ai">
+            <div class="msg-bubble">Ready. Send a message to test the inference pipeline — caching, rate limiting, and security scan all run on each request.</div>
+            <div class="msg-meta"><span class="meta-chip chip-model">primary model</span></div>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <input class="chat-input" id="chat-input" type="text" placeholder="Ask anything…" onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="send-btn" id="send-btn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+      <div class="right-panel">
+        <div class="panel-section">
+          <div class="panel-title">System health</div>
+          <div class="status-row"><span class="status-label">Status</span><span class="health-badge"><span class="dot-green"></span>Healthy</span></div>
+          <div class="status-row"><span class="status-label">Environment</span><span class="status-val">Production</span></div>
+          <div class="status-row"><span class="status-label">Rate limit</span><span class="status-val">20 / min</span></div>
+          <div class="status-row"><span class="status-label">Cache TTL</span><span class="status-val">300 s</span></div>
+        </div>
+        <div class="panel-section pipeline" id="pipeline-panel">
+          <div class="panel-title">Request pipeline</div>
+          <div id="pipe-steps"></div>
+        </div>
+        <div class="inspector" id="inspector-panel" style="display:none">
+          <div class="insp-title" id="insp-req-label">Request #—</div>
+          <div id="insp-rows"></div>
+          <div class="insp-total"><span class="insp-total-label">Total time</span><span class="insp-total-val" id="insp-total">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- METRICS -->
+  <div class="content" id="tab-metrics">
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-label">Requests today</div><div class="metric-val" id="m-req">143</div><div class="metric-sub">↑ 12 vs yesterday</div></div>
+      <div class="metric-card"><div class="metric-label">Avg latency</div><div class="metric-val" id="m-lat">615<span style="font-size:14px;font-weight:400"> ms</span></div><div class="metric-sub">p95: 1 240 ms</div></div>
+      <div class="metric-card"><div class="metric-label">Cache hit rate</div><div class="metric-val" id="m-cache">42<span style="font-size:14px;font-weight:400">%</span></div><div class="metric-sub">62 hits / 143 req</div></div>
+      <div class="metric-card"><div class="metric-label">Errors</div><div class="metric-val" style="color:var(--em)" id="m-err">0</div><div class="metric-sub">Last 24 hours</div></div>
+    </div>
+    <div class="charts-row">
+      <div>
+        <div class="chart-title">Latency over time (ms)</div>
+        <div class="bar-chart" id="lat-chart"></div>
+        <div class="bar-labels" id="lat-labels"></div>
+      </div>
+      <div>
+        <div class="chart-title">Cache hits vs misses</div>
+        <div class="bar-chart" id="cache-chart"></div>
+        <div class="bar-labels" id="cache-labels"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECURITY -->
+  <div class="content" id="tab-security">
+    <div class="security-layout">
+      <div class="sec-header">The security layer runs on every request — before the LLM is ever called. Try the demos to see how each check behaves.</div>
+      <div class="sec-btns">
+        <button class="sec-btn" onclick="runSecDemo('normal')"><i class="ti ti-send" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>Normal request</button>
+        <button class="sec-btn danger" onclick="runSecDemo('injection')"><i class="ti ti-shield-x" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>Prompt injection</button>
+        <button class="sec-btn" onclick="runSecDemo('pii')"><i class="ti ti-user-off" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>PII masking</button>
+      </div>
+      <div class="sec-result" id="sec-result"></div>
+    </div>
+  </div>
+
+  <!-- HEALTH -->
+  <div class="content" id="tab-health">
+    <div class="health-layout">
+      <div class="health-grid">
+        <div class="health-card"><div class="hc-name">Agent</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">LangGraph executor</div></div>
+        <div class="health-card"><div class="hc-name">Security</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">Injection + PII scan</div></div>
+        <div class="health-card"><div class="hc-name">Cache</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">Redis · 300 s TTL</div></div>
+        <div class="health-card"><div class="hc-name">Rate limiter</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">20 req / min / key</div></div>
+        <div class="health-card"><div class="hc-name">OpenRouter</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">Primary: Llama 3.1</div></div>
+        <div class="health-card"><div class="hc-name">LangSmith</div><div class="hc-status hc-online"><span class="dot-green"></span>Online</div><div class="hc-detail">Tracing active</div></div>
+      </div>
+      <div class="env-card">
+        <div><div class="env-label">Environment</div><div class="env-val">Production</div></div>
+        <div style="text-align:right"><div class="env-label">Version</div><div class="env-val">1.0.0</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PIPE_STEPS=[
+  {id:'validate',label:'Input validation'},
+  {id:'rate',label:'Rate limiter'},
+  {id:'security',label:'Security scan'},
+  {id:'cache',label:'Cache lookup'},
+  {id:'langgraph',label:'LangGraph'},
+  {id:'openrouter',label:'OpenRouter'},
+  {id:'resp',label:'Response validation'},
+];
+
+let reqCount=143;
+let pipeState={};
+
+function renderPipe(states,times){
+  const el=document.getElementById('pipe-steps');
+  el.innerHTML=PIPE_STEPS.map((s,i)=>{
+    const st=states[s.id]||'idle';
+    const t=times&&times[s.id]?`<span class="pipe-time">${times[s.id]}</span>`:'';
+    const icon=st==='done'?'<i class="ti ti-check" aria-hidden="true"></i>':st==='fail'?'<i class="ti ti-x" aria-hidden="true"></i>':'';
+    return `${i>0?'<div class="pipe-connector"></div>':''}
+    <div class="pipe-step ${st}" id="pipe-${s.id}">
+      <div class="pipe-icon">${icon}</div>
+      <span>${s.label}</span>${t}
+    </div>`;
+  }).join('');
+}
+
+renderPipe({});
+
+let msgCount=0;
+const hitPool=['What is machine learning?','Explain LangGraph briefly.','What is a vector database?'];
+let hitIndex=0;
+
+function addMsg(role,text,meta){
+  const wrap=document.createElement('div');
+  wrap.className=`msg ${role}`;
+  const bubble=document.createElement('div');
+  bubble.className='msg-bubble';
+  bubble.textContent=text;
+  wrap.appendChild(bubble);
+  if(meta){
+    const m=document.createElement('div');
+    m.className='msg-meta';
+    m.innerHTML=meta;
+    wrap.appendChild(m);
+  }
+  document.getElementById('chat-messages').appendChild(wrap);
+  wrap.scrollIntoView({behavior:'smooth',block:'end'});
+  return wrap;
+}
+
+function addTyping(){
+  const wrap=document.createElement('div');
+  wrap.className='msg ai';
+  wrap.id='typing-indicator';
+  wrap.innerHTML='<div class="msg-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>';
+  document.getElementById('chat-messages').appendChild(wrap);
+  wrap.scrollIntoView({behavior:'smooth',block:'end'});
+}
+
+function removeTyping(){
+  const t=document.getElementById('typing-indicator');
+  if(t)t.remove();
+}
+
+async function sendChat(){
+  const input=document.getElementById('chat-input');
+  const btn=document.getElementById('send-btn');
+  const text=input.value.trim();
+  if(!text)return;
+  input.value='';
+  btn.disabled=true;
+
+  reqCount++;
+  const isHit=hitPool.includes(text);
+  const totalMs=isHit?Math.round(40+Math.random()*30):Math.round(700+Math.random()*400);
+
+  addMsg('user',text);
+  addTyping();
+
+  const times={};
+  const stateSeq=['validate','rate','security','cache'];
+  const delays={validate:80,rate:120,security:200,cache:320};
+  const stepTimes={validate:'12 ms',rate:'8 ms',security:'34 ms'};
+
+  renderPipe({});
+
+  for(const step of stateSeq){
+    await delay(delays[step]);
+    if(step==='cache'){
+      const allDone=Object.fromEntries(stateSeq.slice(0,-1).map(s=>[s,'done']));
+      allDone.cache='active';
+      renderPipe(allDone,stepTimes);
+      await delay(120);
+      const cacheResult=isHit?'done':'done';
+      const allDone2=Object.fromEntries(stateSeq.map(s=>[s,'done']));
+      times.cache=isHit?'7 ms':'18 ms';
+      stepTimes.cache=times.cache;
+      renderPipe(allDone2,stepTimes);
+    } else {
+      const cur={};
+      stateSeq.forEach((s,i)=>{
+        if(i<stateSeq.indexOf(step))cur[s]='done';
+        else if(s===step)cur[s]='active';
+      });
+      renderPipe(cur,stepTimes);
+    }
+  }
+
+  if(!isHit){
+    await delay(100);
+    const mid={validate:'done',rate:'done',security:'done',cache:'done',langgraph:'active'};
+    renderPipe(mid,stepTimes);
+    await delay(300);
+    mid.langgraph='done';mid.openrouter='active';
+    stepTimes.langgraph='124 ms';
+    renderPipe(mid,stepTimes);
+    await delay(totalMs-500);
+    mid.openrouter='done';mid.resp='active';
+    stepTimes.openrouter=`${totalMs-250} ms`;
+    renderPipe(mid,stepTimes);
+    await delay(120);
+    mid.resp='done';
+    stepTimes.resp='22 ms';
+    renderPipe(mid,stepTimes);
+  }
+
+  removeTyping();
+  const cacheChip=isHit
+    ?'<span class="meta-chip chip-cached">cached</span>'
+    :'<span class="meta-chip chip-miss">cache miss</span>';
+  const latChip=`<span style="font-size:11px;color:var(--text-muted)">Latency: ${totalMs} ms</span>`;
+  const modelChip='<span class="meta-chip chip-model">primary</span>';
+
+  addMsg('ai',isHit
+    ?'Returning cached response — this exact query was answered recently.'
+    :'Response generated via LangGraph → OpenRouter (Llama 3.1). PII scan, rate limit, and JSON schema validation all passed.',
+    `${cacheChip}${latChip}${modelChip}`
+  );
+
+  showInspector(reqCount,isHit,totalMs);
+  btn.disabled=false;
+  input.focus();
+}
+
+function showInspector(num,isHit,ms){
+  const panel=document.getElementById('inspector-panel');
+  panel.style.display='block';
+  document.getElementById('insp-req-label').textContent=`Request #${num}`;
+  const rows=[
+    {label:'JSON validated',pass:true},
+    {label:'Rate limit',pass:true},
+    {label:'Prompt sanitized',pass:true},
+    {label:'Cache',pass:isHit,label2:isHit?'HIT':'MISS'},
+    {label:'LangGraph',pass:!isHit,skip:isHit},
+    {label:'OpenRouter (Llama)',pass:!isHit,skip:isHit},
+    {label:'Response validated',pass:true},
+  ];
+  document.getElementById('insp-rows').innerHTML=rows.map(r=>{
+    if(r.skip) return `<div class="insp-row"><span class="insp-label">${r.label}</span><span class="insp-skip">skipped</span></div>`;
+    const cls=r.pass?'insp-pass':'insp-fail';
+    const icon=r.pass?'✔':'✖';
+    const lbl=r.label2||'';
+    return `<div class="insp-row"><span class="insp-label">${r.label}${lbl?' · '+lbl:''}</span><span class="${cls}">${icon}</span></div>`;
+  }).join('');
+  document.getElementById('insp-total').textContent=`${ms} ms`;
+}
+
+function delay(ms){return new Promise(r=>setTimeout(r,ms))}
+
+function switchTab(name,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.content').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+  if(name==='metrics')renderMetrics();
+}
+
+function renderMetrics(){
+  const hours=['10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm','9pm'];
+  const lats=hours.map(()=>Math.round(400+Math.random()*600));
+  const maxL=Math.max(...lats);
+  document.getElementById('lat-chart').innerHTML=lats.map(v=>`<div class="bar" style="height:${Math.round(v/maxL*90)}px;background:var(--indigo);opacity:0.8" title="${v} ms"></div>`).join('');
+  document.getElementById('lat-labels').innerHTML=hours.map(h=>`<div class="bar-lbl">${h}</div>`).join('');
+
+  const hits=hours.map(()=>Math.round(2+Math.random()*8));
+  const miss=hours.map(()=>Math.round(3+Math.random()*10));
+  const maxC=Math.max(...hits.map((h,i)=>h+miss[i]));
+  document.getElementById('cache-chart').innerHTML=hours.map((_,i)=>`
+    <div style="flex:1;display:flex;flex-direction:column;align-items:stretch;gap:1px">
+      <div class="bar" style="flex:${miss[i]};background:#F59E0B;opacity:.75"></div>
+      <div class="bar" style="flex:${hits[i]};background:var(--em);opacity:.8"></div>
+    </div>`).join('');
+  document.getElementById('cache-labels').innerHTML=hours.map(h=>`<div class="bar-lbl">${h}</div>`).join('');
+}
+
+function runSecDemo(type){
+  const r=document.getElementById('sec-result');
+  r.className='sec-result show';
+  if(type==='normal'){
+    r.innerHTML=`<div style="color:var(--em);font-weight:500;margin-bottom:8px;font-size:14px"><i class="ti ti-circle-check" style="margin-right:4px" aria-hidden="true"></i>Request passed all checks</div>
+      <div style="font-size:12px;color:var(--text-secondary);line-height:1.7">
+        ✔ JSON schema valid<br>✔ Rate limit: 4 / 20 used<br>✔ No injection patterns detected<br>✔ No PII found<br>✔ Proceeding to LangGraph
+      </div>`;
+  } else if(type==='injection'){
+    r.innerHTML=`<div class="sec-blocked"><i class="ti ti-shield-x" aria-hidden="true"></i>Blocked by security layer</div>
+      <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin-bottom:10px">Input matched prompt injection signature. Request terminated before reaching the LLM.</div>
+      <div style="background:var(--surface-2);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px;font-family:var(--mono);font-size:11px;color:var(--text-muted)">
+        DETECTED: "ignore previous instructions"<br>RULE: injection_v2<br>ACTION: block · HTTP 400<br>LATENCY: 18 ms (LLM never called)
+      </div>`;
+  } else {
+    r.innerHTML=`<div style="color:var(--indigo);font-weight:500;margin-bottom:10px;font-size:14px"><i class="ti ti-user-off" style="margin-right:4px" aria-hidden="true"></i>PII detected and masked</div>
+      <div class="sec-pii-demo">
+        <div class="pii-box"><div class="pii-label">Input</div>My name is Sarah Chen, email sarah@acme.com, SSN 123-45-6789.</div>
+        <div class="pii-box"><div class="pii-label">Sent to LLM</div>My name is <span class="pii-redact">[NAME]</span>, email <span class="pii-redact">[EMAIL]</span>, SSN <span class="pii-redact">[SSN]</span>.</div>
+      </div>`;
+  }
+}
+</script>
