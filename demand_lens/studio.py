@@ -1,0 +1,273 @@
+"""No-code KnowledgeOps control plane for retrieval, policies, and evaluations."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sqlite3
+import time
+import uuid
+from dataclasses import asdict
+from typing import Any
+
+from .retrieval import HybridRetriever, tokenize
+
+
+INJECTION_PATTERNS = [
+    re.compile(pattern, re.I)
+    for pattern in (
+        r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
+        r"reveal\s+(the\s+)?system\s+prompt",
+        r"dump\s+(all\s+)?(secrets|instructions|records)",
+        r"bypass\s+(all\s+)?(rules|restrictions|guardrails)",
+    )
+]
+PII_PATTERNS = {
+    "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    "phone": re.compile(r"\b(?:\+?\d[\s.-]?)?(?:\d[\s.-]?){9,12}\b"),
+    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+}
+
+
+def chunk_text(text: str, size: int = 700, overlap: int = 100) -> list[str]:
+    """Paragraph-aware deterministic chunking with bounded overlap."""
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if current and len(current) + len(paragraph) + 2 > size:
+            chunks.append(current)
+            current = current[-overlap:] + "\n\n" + paragraph
+        else:
+            current = f"{current}\n\n{paragraph}".strip()
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
+class KnowledgeOpsStudio:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def _documents(self) -> list[dict[str, str]]:
+        documents = []
+        for source in self.connection.execute(
+            "SELECT source_id, name, source_type, content FROM knowledge_sources WHERE status = 'indexed' ORDER BY created_at"
+        ):
+            chunks = chunk_text(source["content"])
+            for index, content in enumerate(chunks):
+                documents.append(
+                    {
+                        "id": f"{source['source_id']}::chunk-{index + 1}",
+                        "source_id": source["source_id"],
+                        "title": source["name"],
+                        "section": f"Chunk {index + 1}",
+                        "content": content,
+                        "source_type": source["source_type"],
+                    }
+                )
+        return documents
+
+    def overview(self) -> dict[str, Any]:
+        source_count = self.connection.execute("SELECT COUNT(*) FROM knowledge_sources").fetchone()[0]
+        incident_count = self.connection.execute("SELECT COUNT(*) FROM incidents WHERE status = 'open'").fetchone()[0]
+        enabled = self.connection.execute("SELECT COUNT(*) FROM guardrail_policies WHERE enabled = 1").fetchone()[0]
+        cases = self.connection.execute("SELECT COUNT(*) FROM evaluation_cases").fetchone()[0]
+        return {
+            "workspace": "DemandLens Production",
+            "sources": source_count,
+            "chunks": len(self._documents()),
+            "enabled_guardrails": enabled,
+            "evaluation_cases": cases,
+            "open_incidents": incident_count,
+            "published_assistant": {"name": "DemandLens", "status": "live", "endpoint": "/api/ask"},
+        }
+
+    def list_sources(self) -> list[dict[str, Any]]:
+        items = []
+        for row in self.connection.execute("SELECT * FROM knowledge_sources ORDER BY created_at DESC"):
+            item = dict(row)
+            item["character_count"] = len(item.pop("content"))
+            item["chunk_count"] = len(chunk_text(row["content"]))
+            items.append(item)
+        return items
+
+    def add_source(self, name: str, content: str, source_type: str = "text") -> dict[str, Any]:
+        normalized = content.strip()
+        if len(normalized) < 20:
+            raise ValueError("Source content must contain at least 20 characters")
+        digest = hashlib.sha256(normalized.encode()).hexdigest()
+        duplicate = self.connection.execute(
+            "SELECT source_id FROM knowledge_sources WHERE content_hash = ?", (digest,)
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"Duplicate content already exists as {duplicate['source_id']}")
+        source_id = f"src-{uuid.uuid4().hex[:10]}"
+        self.connection.execute(
+            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash) VALUES (?, ?, ?, ?, ?)",
+            (source_id, name.strip(), source_type, normalized, digest),
+        )
+        self.connection.commit()
+        return {"source_id": source_id, "name": name.strip(), "status": "indexed", "chunk_count": len(chunk_text(normalized))}
+
+    def source_chunks(self, source_id: str) -> list[dict[str, Any]]:
+        row = self.connection.execute(
+            "SELECT name, content FROM knowledge_sources WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        if not row:
+            raise KeyError(source_id)
+        return [
+            {"chunk_id": f"{source_id}::chunk-{index + 1}", "position": index + 1, "characters": len(content), "content": content}
+            for index, content in enumerate(chunk_text(row["content"]))
+        ]
+
+    def compare_retrieval(self, query: str, limit: int = 5) -> dict[str, Any]:
+        documents = self._documents()
+        retriever = HybridRetriever(documents)
+        started = time.perf_counter()
+        bm25_raw = retriever._bm25(query)[:limit]
+        bm25_ms = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        semantic_raw = retriever._semantic(query)[:limit]
+        semantic_ms = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        hybrid_raw = retriever.search(query, limit=limit)
+        hybrid_ms = (time.perf_counter() - started) * 1000
+
+        def basic(items: list[tuple[int, float]]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "rank": rank,
+                    "chunk_id": documents[index]["id"],
+                    "source_id": documents[index]["source_id"],
+                    "title": documents[index]["title"],
+                    "content": documents[index]["content"],
+                    "score": round(score, 6),
+                }
+                for rank, (index, score) in enumerate(items, 1)
+            ]
+
+        return {
+            "query": query,
+            "query_tokens": tokenize(query),
+            "bm25": {"latency_ms": round(bm25_ms, 2), "results": basic(bm25_raw)},
+            "semantic": {"latency_ms": round(semantic_ms, 2), "results": basic(semantic_raw)},
+            "hybrid": {
+                "latency_ms": round(hybrid_ms, 2),
+                "weights": {"bm25": 0.45, "semantic": 0.55, "rrf_k": 60},
+                "results": [
+                    {
+                        "rank": rank,
+                        "chunk_id": item.document["id"],
+                        "source_id": item.document["source_id"],
+                        "title": item.document["title"],
+                        "content": item.document["content"],
+                        "score": round(item.fused_score, 6),
+                        "bm25_rank": item.bm25_rank,
+                        "semantic_rank": item.semantic_rank,
+                    }
+                    for rank, item in enumerate(hybrid_raw, 1)
+                ],
+            },
+        }
+
+    def list_guardrails(self) -> list[dict[str, Any]]:
+        return [
+            {**dict(row), "enabled": bool(row["enabled"]), "config": json.loads(row["config_json"])}
+            for row in self.connection.execute("SELECT * FROM guardrail_policies ORDER BY policy_key")
+        ]
+
+    def update_guardrail(self, key: str, enabled: bool, config: dict[str, Any]) -> dict[str, Any]:
+        found = self.connection.execute("SELECT 1 FROM guardrail_policies WHERE policy_key = ?", (key,)).fetchone()
+        if not found:
+            raise KeyError(key)
+        self.connection.execute(
+            "UPDATE guardrail_policies SET enabled = ?, config_json = ? WHERE policy_key = ?",
+            (int(enabled), json.dumps(config), key),
+        )
+        self.connection.commit()
+        return next(policy for policy in self.list_guardrails() if policy["policy_key"] == key)
+
+    def _policy(self, key: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT enabled, config_json FROM guardrail_policies WHERE policy_key = ?", (key,)
+        ).fetchone()
+        return json.loads(row["config_json"]) if row and row["enabled"] else None
+
+    def guarded_query(self, question: str, record_incident: bool = True) -> dict[str, Any]:
+        events = []
+        processed = question
+        injection = self._policy("prompt_injection")
+        if injection and any(pattern.search(question) for pattern in INJECTION_PATTERNS):
+            events.append({"policy": "prompt_injection", "action": "block", "reason": "Instruction override pattern detected"})
+            if record_incident:
+                self._incident("high", "guardrail", question, "Prompt-injection policy blocked the request")
+            return {"status": "blocked", "question": question, "processed_question": None, "events": events, "results": []}
+
+        pii = self._policy("pii_masking")
+        if pii:
+            for kind in pii.get("types", []):
+                pattern = PII_PATTERNS.get(kind)
+                if pattern and pattern.search(processed):
+                    processed = pattern.sub(f"[{kind.upper()} REDACTED]", processed)
+                    events.append({"policy": "pii_masking", "action": "mask", "reason": f"{kind} detected"})
+
+        comparison = self.compare_retrieval(processed)
+        results = comparison["hybrid"]["results"]
+        threshold = self._policy("retrieval_threshold")
+        if threshold and (not results or results[0]["score"] < threshold.get("minimum_rrf_score", 0)):
+            events.append({"policy": "retrieval_threshold", "action": "abstain", "reason": "Evidence score below configured threshold"})
+            if record_incident:
+                self._incident("medium", "retrieval", question, "The assistant abstained because retrieval evidence was weak")
+            return {"status": "abstained", "question": question, "processed_question": processed, "events": events, "results": results}
+        events.append({"policy": "citations_required", "action": "allow", "reason": f"{len(results)} cited chunks available"})
+        return {"status": "answered", "question": question, "processed_question": processed, "events": events, "results": results}
+
+    def _incident(self, severity: str, category: str, question: str, explanation: str) -> None:
+        self.connection.execute(
+            "INSERT INTO incidents(severity, category, question, explanation) VALUES (?, ?, ?, ?)",
+            (severity, category, question, explanation),
+        )
+        self.connection.commit()
+
+    def list_evaluations(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM evaluation_cases ORDER BY case_id")]
+
+    def add_evaluation(self, question: str, expected_source_id: str | None, expected_behavior: str, tags: str) -> dict[str, Any]:
+        cursor = self.connection.execute(
+            "INSERT INTO evaluation_cases(question, expected_source_id, expected_behavior, tags) VALUES (?, ?, ?, ?)",
+            (question, expected_source_id, expected_behavior, tags),
+        )
+        self.connection.commit()
+        return dict(self.connection.execute("SELECT * FROM evaluation_cases WHERE case_id = ?", (cursor.lastrowid,)).fetchone())
+
+    def run_evaluations(self) -> dict[str, Any]:
+        details = []
+        retrieval_total = retrieval_hits = behavior_hits = 0
+        for case in self.connection.execute("SELECT * FROM evaluation_cases ORDER BY case_id"):
+            outcome = self.guarded_query(case["question"], record_incident=False)
+            retrieved = [item["source_id"] for item in outcome["results"][:3]]
+            retrieval_ok = None
+            if case["expected_source_id"]:
+                retrieval_total += 1
+                retrieval_ok = case["expected_source_id"] in retrieved
+                retrieval_hits += int(retrieval_ok)
+            behavior_ok = outcome["status"] == ("blocked" if case["expected_behavior"] == "block" else "answered")
+            behavior_hits += int(behavior_ok)
+            details.append(
+                {
+                    "case_id": case["case_id"], "question": case["question"], "status": outcome["status"],
+                    "retrieval_at_3": retrieval_ok, "behavior_pass": behavior_ok,
+                }
+            )
+        return {
+            "run_id": f"eval-{uuid.uuid4().hex[:8]}",
+            "cases": len(details),
+            "retrieval_recall_at_3": round(retrieval_hits / retrieval_total, 3) if retrieval_total else None,
+            "guardrail_behavior_accuracy": round(behavior_hits / len(details), 3) if details else None,
+            "details": details,
+        }
+
+    def list_incidents(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM incidents ORDER BY incident_id DESC LIMIT 100")]

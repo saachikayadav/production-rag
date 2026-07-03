@@ -52,3 +52,30 @@ class DemandAnswer(BaseModel):
     sql: dict | None = None
     citations: list[dict] = Field(default_factory=list)
     warning: str | None = None
+
+
+class SourceCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    content: str = Field(..., min_length=20, max_length=200_000)
+    source_type: str = Field(default="text", pattern="^(text|markdown|policy|url)$")
+
+
+class RetrievalQuery(BaseModel):
+    query: str = Field(..., min_length=2, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class GuardrailUpdate(BaseModel):
+    enabled: bool
+    config: dict = Field(default_factory=dict)
+
+
+class EvaluationCreate(BaseModel):
+    question: str = Field(..., min_length=3, max_length=1000)
+    expected_source_id: str | None = None
+    expected_behavior: str = Field(default="answer", pattern="^(answer|block)$")
+    tags: str = ""
+
+
+class StudioQuery(BaseModel):
+    question: str = Field(..., min_length=2, max_length=1000)

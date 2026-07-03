@@ -1,38 +1,77 @@
-# DemandLens
+# Groundwire
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Open_DemandLens-e82127?style=for-the-badge)](https://production-rag-1.onrender.com/)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Open_Groundwire-e35335?style=for-the-badge)](https://production-rag-1.onrender.com/)
 
-**Live application:** [production-rag-1.onrender.com](https://production-rag-1.onrender.com/)
+Groundwire is a RAG operations studio for product managers, knowledge owners, and junior AI teams. It turns knowledge ingestion, retrieval tuning, guardrails, evaluations, and production failures into visible workflows instead of configuration hidden in code.
 
-DemandLens is a deployed-style AI copilot for demand planners. It answers mixed questions across a relational planning warehouse and internal planning documentation, exposes generated SQL, cites evidence, and records retrieval provenance.
+The included **DemandLens** demand-planning copilot is the first published assistant built through the workspace. All data is synthetic; this project is not affiliated with Tesla.
 
-> All products, regions, policies, and demand records are synthetic. The project is an engineering demonstration and is not affiliated with Tesla.
+## Product workflow
 
-## Why this project exists
+```text
+Connect sources → inspect chunks → compare retrieval → configure guardrails
+       → run a release evaluation → publish assistant → review incidents
+```
 
-Demand planning questions rarely live in one data source. “Which region has the largest forecast miss, and how should the metric be interpreted?” requires both a database calculation and the current business definition. DemandLens routes a question through both evidence channels and returns one inspectable answer.
+### Knowledge sources
+
+- Paste Markdown or text into a workspace
+- SHA-256 content deduplication
+- Paragraph-aware chunking with bounded overlap
+- Source status, size, and chunk inspection
+- Stable source and chunk identifiers for provenance
+
+### Retrieval lab
+
+Every test question displays BM25, semantic-baseline, and hybrid results side by side. Hybrid retrieval uses explicit weighted reciprocal-rank fusion:
+
+```text
+RRF(document) = Σ weightᵢ / (k + rankᵢ(document))
+```
+
+The UI exposes keyword rank, semantic rank, fused score, source, chunk, and per-channel latency. The deterministic local semantic baseline makes the product usable without an API key; the retrieval interface can be replaced with a dense embedding provider or pgvector.
+
+### Guardrail studio
+
+Policies are versionable structured configuration enforced in Python, not suggestions embedded in a system prompt:
+
+- Prompt-injection blocking
+- Email, phone, and SSN masking
+- Citation requirements
+- Retrieval-confidence abstention
+- Visible policy test traces
+
+Blocked and abstained requests produce operational incidents explaining which policy acted and why.
+
+### Evaluation studio
+
+The seeded release gate covers expected sources and expected safety behavior. Runs report retrieval Recall@3 and guardrail behavior accuracy with case-level results and stable run identifiers.
+
+### Published assistant
+
+DemandLens demonstrates mixed structured and unstructured evidence:
+
+- Governed text-to-SQL over synthetic demand, forecast, and inventory data
+- Schema-derived knowledge documents
+- Read-only database authorization
+- SQL allowlisting, `EXPLAIN`, timeout, and row limits
+- Policy citations and retrieval provenance
 
 ## Architecture
 
 ```text
-Question
-  ├── Hybrid knowledge retrieval
-  │     ├── BM25 keyword ranking
-  │     ├── deterministic semantic baseline
-  │     └── explicit weighted reciprocal-rank fusion (RRF)
-  ├── Text-to-SQL planner
-  │     ├── schema-derived context
-  │     ├── SELECT/WITH allowlist
-  │     ├── SQLite read-only authorizer
-  │     ├── EXPLAIN, timeout, and row limit
-  │     └── parameterized execution
-  └── Evidence-grounded synthesis
-        ├── SQL and result preview
-        ├── policy citations
-        └── BM25, semantic, and fused ranks
+Browser control plane
+        │
+FastAPI application
+        ├── Knowledge source registry + chunker
+        ├── BM25 / semantic baseline / weighted RRF
+        ├── Structured guardrail policy engine
+        ├── Evaluation runner
+        ├── Incident inbox
+        └── DemandLens published assistant
+                ├── planning-document retrieval
+                └── governed SQL executor
 ```
-
-The default semantic path uses deterministic local feature hashing so the demo and benchmark work without API keys. It is deliberately an offline baseline: a production deployment can replace `hashed_embedding` with a hosted embedding model or pgvector without changing the fusion interface.
 
 ## Run locally
 
@@ -43,42 +82,37 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Open `http://localhost:8000`. API documentation is at `/docs`.
+Open `http://localhost:8000`; API documentation is available at `/docs`.
 
-Useful endpoints:
+## Control-plane API
 
-- `POST /api/ask` — demand-planning RAG + SQL
-- `GET /api/examples` — representative questions
-- `GET /health` — component health
-- `GET /metrics` — API metrics
-- `POST /chat` — original general LangGraph endpoint
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/studio/overview` | Workspace health |
+| `GET/POST` | `/api/studio/sources` | List or ingest sources |
+| `GET` | `/api/studio/sources/{id}/chunks` | Inspect chunk boundaries |
+| `POST` | `/api/studio/retrieval/compare` | Compare three retrievers |
+| `GET/PUT` | `/api/studio/guardrails/{key}` | Read or update policies |
+| `POST` | `/api/studio/test` | Test the active guardrails |
+| `GET/POST` | `/api/studio/evaluations` | Manage evaluation cases |
+| `POST` | `/api/studio/evaluations/run` | Run a release evaluation |
+| `GET` | `/api/studio/incidents` | Review operational failures |
+| `POST` | `/api/ask` | Query the published DemandLens assistant |
 
-## Evaluation
+## Verification
 
 ```bash
-python evaluation.py
 pytest -q
+python evaluation.py
 ```
 
-`evaluation.py` is a deterministic regression benchmark covering retrieval Recall@3 and SQL execution accuracy. The next production step is a larger, versioned dataset comparing BM25, dense retrieval, RRF, and RRF plus reranking on Recall@K, MRR, nDCG, latency, and cost.
+The tests cover ingestion, deduplication, chunking, retrieval provenance, guardrail enforcement and toggles, PII masking, incidents, evaluation metrics, SQL safety, and mixed RAG/SQL answers.
 
-## Security model
+## Current MVP boundaries
 
-Generated queries are not trusted. DemandLens accepts one `SELECT` or `WITH` statement, rejects mutation and DDL tokens, uses database-level authorization, executes `EXPLAIN QUERY PLAN`, interrupts long queries, and truncates result sets. These controls are defense in depth; string filtering alone is not treated as a security boundary.
+- The hosted demo uses an in-memory SQLite workspace, so operator changes reset when the service restarts. Production persistence should use PostgreSQL and object storage.
+- Text ingestion is implemented end to end. URL and PDF ingestion need background workers, content extraction, malware checks, and object storage before being exposed to users.
+- LangSmith tracing remains available in the original model path. The incident schema includes a trace URL extension point; syncing LangSmith feedback and runs is the next integration.
+- This is currently a single-workspace product without authentication. Multi-user use requires identity, tenant isolation, encrypted secrets, audit logs, and authorization tests.
 
-## Repository map
-
-```text
-demand_lens/database.py   synthetic warehouse + schema-to-document catalog
-demand_lens/retrieval.py  BM25, semantic baseline, and explicit weighted RRF
-demand_lens/sql_engine.py text-to-SQL baseline and governed execution
-demand_lens/service.py    retrieval/SQL orchestration and synthesis
-evaluation.py             reproducible retrieval and SQL benchmark
-tests/                    retrieval, SQL safety, and end-to-end regression tests
-```
-
-## Known limitations
-
-- The included text-to-SQL planner is deterministic for reproducibility and supports a bounded analytics vocabulary. A hosted LLM planner can be added behind the same `QueryPlan` boundary, but its output must pass identical controls.
-- SQLite is appropriate for the self-contained demo. A multi-user deployment should use PostgreSQL, a read-only database role, statement timeouts, and pgvector.
-- The local semantic baseline captures lexical-semantic features but is not a substitute for a benchmarked dense embedding model.
+These limitations are explicit because a trustworthy production tool should distinguish completed controls from roadmap claims.

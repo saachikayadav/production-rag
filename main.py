@@ -8,13 +8,18 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from langsmith import traceable
 from config import get_settings
-from models import ChatRequest, ChatResponse, DemandAnswer, DemandQuestion, HealthResponse, MetricsResponse
+from models import (
+    ChatRequest, ChatResponse, DemandAnswer, DemandQuestion, EvaluationCreate,
+    GuardrailUpdate, HealthResponse, MetricsResponse, RetrievalQuery, SourceCreate,
+    StudioQuery,
+)
 from security_patterns import SecurePipeline
 from cache import ResponseCache
 from monitoring import get_logger, MetricsCollector, RequestTimer
 from agent import ProductionAgent
 from demand_lens import DemandLensService
 from demand_lens.database import connect
+from demand_lens.studio import KnowledgeOpsStudio
 
 load_dotenv()
 
@@ -23,13 +28,14 @@ cache = None
 metrics = None
 agent = None
 demand_lens = None
+studio = None
 logger = get_logger()
 
 limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global security, cache, metrics, agent, demand_lens
+    global security, cache, metrics, agent, demand_lens, studio
 
     settings = get_settings()
 
@@ -39,7 +45,9 @@ async def lifespan(app: FastAPI):
     cache = ResponseCache(ttl_seconds=settings.cache_ttl_seconds)
     metrics = MetricsCollector()
     agent = ProductionAgent()
-    demand_lens = DemandLensService(connect())
+    planning_db = connect()
+    demand_lens = DemandLensService(planning_db)
+    studio = KnowledgeOpsStudio(planning_db)
 
     logger.info("All components initialized. Ready to serve requests.")
 
@@ -49,9 +57,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Production LangGraph API",
-    description="Production-ready chat API with security, caching, and observability.",
-    version="1.0.0",
+    title="Groundwire RAG Operations Studio",
+    description="No-code knowledge, retrieval, guardrail, evaluation, and incident workflows.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -96,6 +104,75 @@ async def demand_question(request: Request, body: DemandQuestion):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/studio/overview")
+def studio_overview():
+    return studio.overview()
+
+
+@app.get("/api/studio/sources")
+def studio_sources():
+    return {"sources": studio.list_sources()}
+
+
+@app.post("/api/studio/sources", status_code=201)
+def studio_add_source(body: SourceCreate):
+    try:
+        return studio.add_source(body.name, body.content, body.source_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/studio/sources/{source_id}/chunks")
+def studio_source_chunks(source_id: str):
+    try:
+        return {"chunks": studio.source_chunks(source_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source not found") from exc
+
+
+@app.post("/api/studio/retrieval/compare")
+def studio_compare_retrieval(body: RetrievalQuery):
+    return studio.compare_retrieval(body.query, body.limit)
+
+
+@app.get("/api/studio/guardrails")
+def studio_guardrails():
+    return {"guardrails": studio.list_guardrails()}
+
+
+@app.put("/api/studio/guardrails/{policy_key}")
+def studio_update_guardrail(policy_key: str, body: GuardrailUpdate):
+    try:
+        return studio.update_guardrail(policy_key, body.enabled, body.config)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Guardrail not found") from exc
+
+
+@app.post("/api/studio/test")
+def studio_test_query(body: StudioQuery):
+    return studio.guarded_query(body.question)
+
+
+@app.get("/api/studio/evaluations")
+def studio_evaluations():
+    return {"cases": studio.list_evaluations()}
+
+
+@app.post("/api/studio/evaluations", status_code=201)
+def studio_add_evaluation(body: EvaluationCreate):
+    return studio.add_evaluation(body.question, body.expected_source_id, body.expected_behavior, body.tags)
+
+
+@app.post("/api/studio/evaluations/run")
+def studio_run_evaluations():
+    return studio.run_evaluations()
+
+
+@app.get("/api/studio/incidents")
+def studio_incidents():
+    return {"incidents": studio.list_incidents()}
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check for Docker/Kubernetes."""
@@ -107,6 +184,7 @@ async def health():
         "security": security is not None,
         "cache": cache is not None,
         "demand_lens": demand_lens is not None,
+        "knowledge_ops_studio": studio is not None,
     }
 
     all_healthy = all(checks.values())
