@@ -1,7 +1,7 @@
 import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, File, Request, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -20,6 +20,7 @@ from agent import ProductionAgent
 from demand_lens import DemandLensService
 from demand_lens.database import connect
 from demand_lens.studio import KnowledgeOpsStudio
+from demand_lens.ingestion import MAX_FILE_BYTES, UploadValidationError, validate_and_extract
 
 load_dotenv()
 
@@ -120,6 +121,22 @@ def studio_add_source(body: SourceCreate):
         return studio.add_source(body.name, body.content, body.source_type)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/studio/sources/upload", status_code=201)
+async def studio_upload_source(file: UploadFile = File(...)):
+    data = await file.read(MAX_FILE_BYTES + 1)
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 10 MB upload limit")
+    try:
+        extracted = validate_and_extract(file.filename or "upload", data, file.content_type)
+        return studio.add_uploaded_source(extracted)
+    except UploadValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        await file.close()
 
 
 @app.get("/api/studio/sources/{source_id}/chunks")

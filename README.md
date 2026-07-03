@@ -15,10 +15,13 @@ Connect sources → inspect chunks → compare retrieval → configure guardrail
 
 ### Knowledge sources
 
-- Paste Markdown or text into a workspace
+- Upload PDF, DOCX, Markdown, TXT, or HTML files up to 10 MB
+- Paste Markdown or text directly into a workspace
 - SHA-256 content deduplication
-- Paragraph-aware chunking with bounded overlap
-- Source status, size, and chunk inspection
+- File-signature, extension, encoding, and extraction validation
+- Structure-aware extraction preserving headings, pages, tables, and section paths
+- Parent–child chunking, immediate-neighbor expansion, and ordered context packing
+- Source status, size, extractor, version, and chunk inspection
 - Stable source and chunk identifiers for provenance
 
 ### Retrieval lab
@@ -90,6 +93,7 @@ Open `http://localhost:8000`; API documentation is available at `/docs`.
 |---|---|---|
 | `GET` | `/api/studio/overview` | Workspace health |
 | `GET/POST` | `/api/studio/sources` | List or ingest sources |
+| `POST` | `/api/studio/sources/upload` | Upload and extract a knowledge file |
 | `GET` | `/api/studio/sources/{id}/chunks` | Inspect chunk boundaries |
 | `POST` | `/api/studio/retrieval/compare` | Compare three retrievers |
 | `GET/PUT` | `/api/studio/guardrails/{key}` | Read or update policies |
@@ -106,12 +110,12 @@ pytest -q
 python evaluation.py
 ```
 
-The tests cover ingestion, deduplication, chunking, retrieval provenance, guardrail enforcement and toggles, PII masking, incidents, evaluation metrics, SQL safety, and mixed RAG/SQL answers.
+The tests cover file validation, Markdown/HTML/DOCX extraction, ingestion, deduplication, parent and neighbor context, chunk provenance, retrieval ranking, guardrail enforcement and toggles, PII masking, incidents, evaluation metrics, SQL safety, and mixed RAG/SQL answers.
 
 ## Current MVP boundaries
 
 - The hosted demo uses an in-memory SQLite workspace, so operator changes reset when the service restarts. Production persistence should use PostgreSQL and object storage.
-- Text ingestion is implemented end to end. URL and PDF ingestion need background workers, content extraction, malware checks, and object storage before being exposed to users.
+- File ingestion and extraction are implemented synchronously for the MVP. Production should move extraction to SQS workers, scan originals for malware, and store them in S3.
 - LangSmith tracing remains available in the original model path. The incident schema includes a trace URL extension point; syncing LangSmith feedback and runs is the next integration.
 - This is currently a single-workspace product without authentication. Multi-user use requires identity, tenant isolation, encrypted secrets, audit logs, and authorization tests.
 

@@ -8,9 +8,9 @@ import re
 import sqlite3
 import time
 import uuid
-from dataclasses import asdict
 from typing import Any
 
+from .ingestion import ExtractedDocument, ExtractedSection
 from .retrieval import HybridRetriever, tokenize
 
 
@@ -50,20 +50,54 @@ class KnowledgeOpsStudio:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
 
+    def _persist_sections(self, source_id: str, sections: list[ExtractedSection]) -> int:
+        position = 0
+        for section_index, section in enumerate(sections, 1):
+            parent_id = f"{source_id}::parent-{section_index}"
+            for content in chunk_text(section.content):
+                position += 1
+                chunk_id = f"{source_id}::chunk-{position}"
+                self.connection.execute(
+                    """INSERT OR REPLACE INTO knowledge_chunks
+                    (chunk_id, source_id, parent_id, position, page_number, section_path, content, character_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        chunk_id, source_id, parent_id, position, section.page_number,
+                        section.section_path, content, len(content),
+                    ),
+                )
+        return position
+
+    def _ensure_chunks(self, source: sqlite3.Row) -> None:
+        existing = self.connection.execute(
+            "SELECT 1 FROM knowledge_chunks WHERE source_id = ? LIMIT 1", (source["source_id"],)
+        ).fetchone()
+        if not existing:
+            self._persist_sections(
+                source["source_id"],
+                [ExtractedSection(source["content"], source["name"])],
+            )
+            self.connection.commit()
+
     def _documents(self) -> list[dict[str, str]]:
         documents = []
         for source in self.connection.execute(
             "SELECT source_id, name, source_type, content FROM knowledge_sources WHERE status = 'indexed' ORDER BY created_at"
         ):
-            chunks = chunk_text(source["content"])
-            for index, content in enumerate(chunks):
+            self._ensure_chunks(source)
+            for chunk in self.connection.execute(
+                "SELECT * FROM knowledge_chunks WHERE source_id = ? ORDER BY position", (source["source_id"],)
+            ):
+                header = f"Document: {source['name']}\nSection: {chunk['section_path']}"
+                if chunk["page_number"]:
+                    header += f"\nPage: {chunk['page_number']}"
                 documents.append(
                     {
-                        "id": f"{source['source_id']}::chunk-{index + 1}",
+                        "id": chunk["chunk_id"],
                         "source_id": source["source_id"],
                         "title": source["name"],
-                        "section": f"Chunk {index + 1}",
-                        "content": content,
+                        "section": chunk["section_path"],
+                        "content": f"{header}\n\n{chunk['content']}",
                         "source_type": source["source_type"],
                     }
                 )
@@ -87,9 +121,17 @@ class KnowledgeOpsStudio:
     def list_sources(self) -> list[dict[str, Any]]:
         items = []
         for row in self.connection.execute("SELECT * FROM knowledge_sources ORDER BY created_at DESC"):
+            self._ensure_chunks(row)
             item = dict(row)
             item["character_count"] = len(item.pop("content"))
-            item["chunk_count"] = len(chunk_text(row["content"]))
+            item["chunk_count"] = self.connection.execute(
+                "SELECT COUNT(*) FROM knowledge_chunks WHERE source_id = ?", (row["source_id"],)
+            ).fetchone()[0]
+            file_row = self.connection.execute(
+                "SELECT original_filename, mime_type, byte_size, version, extraction_method FROM source_files WHERE source_id = ?",
+                (row["source_id"],),
+            ).fetchone()
+            item["file"] = dict(file_row) if file_row else None
             items.append(item)
         return items
 
@@ -108,19 +150,50 @@ class KnowledgeOpsStudio:
             "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash) VALUES (?, ?, ?, ?, ?)",
             (source_id, name.strip(), source_type, normalized, digest),
         )
+        chunk_count = self._persist_sections(source_id, [ExtractedSection(normalized, name.strip())])
         self.connection.commit()
-        return {"source_id": source_id, "name": name.strip(), "status": "indexed", "chunk_count": len(chunk_text(normalized))}
+        return {"source_id": source_id, "name": name.strip(), "status": "indexed", "chunk_count": chunk_count}
+
+    def add_uploaded_source(self, document: ExtractedDocument) -> dict[str, Any]:
+        normalized = document.text.strip()
+        digest = hashlib.sha256(normalized.encode()).hexdigest()
+        duplicate = self.connection.execute(
+            "SELECT source_id FROM knowledge_sources WHERE content_hash = ?", (digest,)
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"Duplicate content already exists as {duplicate['source_id']}")
+        source_id = f"src-{uuid.uuid4().hex[:10]}"
+        self.connection.execute(
+            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash) VALUES (?, ?, ?, ?, ?)",
+            (source_id, document.filename, "file", normalized, digest),
+        )
+        self.connection.execute(
+            """INSERT INTO source_files
+            (source_id, original_filename, mime_type, byte_size, version, extraction_method)
+            VALUES (?, ?, ?, ?, 1, ?)""",
+            (source_id, document.filename, document.mime_type, document.byte_size, document.extraction_method),
+        )
+        chunk_count = self._persist_sections(source_id, document.sections)
+        self.connection.commit()
+        return {
+            "source_id": source_id, "name": document.filename, "status": "indexed",
+            "chunk_count": chunk_count, "mime_type": document.mime_type,
+            "byte_size": document.byte_size, "extraction_method": document.extraction_method,
+        }
 
     def source_chunks(self, source_id: str) -> list[dict[str, Any]]:
         row = self.connection.execute(
-            "SELECT name, content FROM knowledge_sources WHERE source_id = ?", (source_id,)
+            "SELECT source_id, name, content, source_type FROM knowledge_sources WHERE source_id = ?", (source_id,)
         ).fetchone()
         if not row:
             raise KeyError(source_id)
-        return [
-            {"chunk_id": f"{source_id}::chunk-{index + 1}", "position": index + 1, "characters": len(content), "content": content}
-            for index, content in enumerate(chunk_text(row["content"]))
-        ]
+        self._ensure_chunks(row)
+        return [dict(chunk) for chunk in self.connection.execute(
+            """SELECT chunk_id, parent_id, position, page_number, section_path,
+            character_count AS characters, content FROM knowledge_chunks
+            WHERE source_id = ? ORDER BY position""",
+            (source_id,),
+        )]
 
     def compare_retrieval(self, query: str, limit: int = 5) -> dict[str, Any]:
         documents = self._documents()
@@ -203,7 +276,7 @@ class KnowledgeOpsStudio:
             events.append({"policy": "prompt_injection", "action": "block", "reason": "Instruction override pattern detected"})
             if record_incident:
                 self._incident("high", "guardrail", question, "Prompt-injection policy blocked the request")
-            return {"status": "blocked", "question": question, "processed_question": None, "events": events, "results": []}
+            return {"status": "blocked", "question": question, "processed_question": None, "events": events, "results": [], "context": []}
 
         pii = self._policy("pii_masking")
         if pii:
@@ -220,9 +293,41 @@ class KnowledgeOpsStudio:
             events.append({"policy": "retrieval_threshold", "action": "abstain", "reason": "Evidence score below configured threshold"})
             if record_incident:
                 self._incident("medium", "retrieval", question, "The assistant abstained because retrieval evidence was weak")
-            return {"status": "abstained", "question": question, "processed_question": processed, "events": events, "results": results}
+            return {"status": "abstained", "question": question, "processed_question": processed, "events": events, "results": results, "context": []}
         events.append({"policy": "citations_required", "action": "allow", "reason": f"{len(results)} cited chunks available"})
-        return {"status": "answered", "question": question, "processed_question": processed, "events": events, "results": results}
+        context = self._pack_context(results)
+        events.append({"policy": "context_packing", "action": "expand", "reason": f"Packed {len(context)} ordered chunks with neighbors"})
+        return {"status": "answered", "question": question, "processed_question": processed, "events": events, "results": results, "context": context}
+
+    def _pack_context(self, results: list[dict[str, Any]], character_budget: int = 6000) -> list[dict[str, Any]]:
+        """Expand matched chunks with immediate neighbors, deduplicate, and restore source order."""
+        selected: dict[str, dict[str, Any]] = {}
+        matched_ids = {result["chunk_id"] for result in results[:3]}
+        for result in results[:3]:
+            row = self.connection.execute(
+                "SELECT source_id, position FROM knowledge_chunks WHERE chunk_id = ?", (result["chunk_id"],)
+            ).fetchone()
+            if not row:
+                continue
+            neighbors = self.connection.execute(
+                """SELECT c.*, s.name AS source_name FROM knowledge_chunks c
+                JOIN knowledge_sources s ON s.source_id = c.source_id
+                WHERE c.source_id = ? AND c.position BETWEEN ? AND ? ORDER BY c.position""",
+                (row["source_id"], max(1, row["position"] - 1), row["position"] + 1),
+            )
+            for chunk in neighbors:
+                item = dict(chunk)
+                item["matched"] = chunk["chunk_id"] in matched_ids
+                selected[chunk["chunk_id"]] = item
+        ordered = sorted(selected.values(), key=lambda item: (item["source_id"], item["position"]))
+        packed = []
+        used = 0
+        for item in ordered:
+            if used + item["character_count"] > character_budget and packed:
+                break
+            packed.append(item)
+            used += item["character_count"]
+        return packed
 
     def _incident(self, severity: str, category: str, question: str, explanation: str) -> None:
         self.connection.execute(

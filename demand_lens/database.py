@@ -77,6 +77,27 @@ CREATE TABLE IF NOT EXISTS incidents (
     status TEXT NOT NULL DEFAULT 'open',
     trace_url TEXT
 );
+CREATE TABLE IF NOT EXISTS source_files (
+    source_id TEXT PRIMARY KEY REFERENCES knowledge_sources(source_id) ON DELETE CASCADE,
+    original_filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    extraction_method TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id) ON DELETE CASCADE,
+    parent_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    page_number INTEGER,
+    section_path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    character_count INTEGER NOT NULL,
+    UNIQUE(source_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_source_position ON knowledge_chunks(source_id, position);
 """
 
 
