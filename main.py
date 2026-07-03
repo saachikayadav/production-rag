@@ -2,17 +2,19 @@ import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from langsmith import traceable
 from config import get_settings
-from models import ChatRequest, ChatResponse, HealthResponse, MetricsResponse, ErrorResponse
+from models import ChatRequest, ChatResponse, DemandAnswer, DemandQuestion, HealthResponse, MetricsResponse
 from security_patterns import SecurePipeline
 from cache import ResponseCache
 from monitoring import get_logger, MetricsCollector, RequestTimer
 from agent import ProductionAgent
+from demand_lens import DemandLensService
+from demand_lens.database import connect
 
 load_dotenv()
 
@@ -20,13 +22,14 @@ security = None
 cache = None
 metrics = None
 agent = None
+demand_lens = None
 logger = get_logger()
 
 limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global security, cache, metrics, agent
+    global security, cache, metrics, agent, demand_lens
 
     settings = get_settings()
 
@@ -36,6 +39,7 @@ async def lifespan(app: FastAPI):
     cache = ResponseCache(ttl_seconds=settings.cache_ttl_seconds)
     metrics = MetricsCollector()
     agent = ProductionAgent()
+    demand_lens = DemandLensService(connect())
 
     logger.info("All components initialized. Ready to serve requests.")
 
@@ -66,10 +70,30 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         content={"error": "Rate limit exceeded", "detail": str(exc)},
     )
 
-
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def root():
-    return {"message": "Production LangGraph API is running"}
+    return FileResponse("frontend.html")
+
+
+@app.get("/api/examples")
+def demand_examples():
+    return {
+        "examples": [
+            "Which region has the largest forecast miss for Model Beta, and how should WAPE be interpreted?",
+            "Which products are at inventory shortage risk?",
+            "Show forecast bias by product and region.",
+            "What controls are required for AI-generated SQL?",
+        ]
+    }
+
+
+@app.post("/api/ask", response_model=DemandAnswer)
+@limiter.limit(get_settings().rate_limit)
+async def demand_question(request: Request, body: DemandQuestion):
+    try:
+        return DemandAnswer(**demand_lens.ask(body.question))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -82,6 +106,7 @@ async def health():
         "agent": agent is not None,
         "security": security is not None,
         "cache": cache is not None,
+        "demand_lens": demand_lens is not None,
     }
 
     all_healthy = all(checks.values())

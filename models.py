@@ -39,3 +39,16 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str | None = None
     request_id: str | None = None
+
+
+class DemandQuestion(BaseModel):
+    question: str = Field(..., min_length=3, max_length=1000)
+
+
+class DemandAnswer(BaseModel):
+    question: str
+    answer: str
+    route: str
+    sql: dict | None = None
+    citations: list[dict] = Field(default_factory=list)
+    warning: str | None = None
