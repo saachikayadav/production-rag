@@ -1,5 +1,9 @@
 # DemandLens
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Open_DemandLens-e82127?style=for-the-badge)](https://production-rag-1.onrender.com/)
+
+**Live application:** [production-rag-1.onrender.com](https://production-rag-1.onrender.com/)
+
 DemandLens is a deployed-style AI copilot for demand planners. It answers mixed questions across a relational planning warehouse and internal planning documentation, exposes generated SQL, cites evidence, and records retrieval provenance.
 
 > All products, regions, policies, and demand records are synthetic. The project is an engineering demonstration and is not affiliated with Tesla.
