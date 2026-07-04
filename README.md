@@ -32,7 +32,11 @@ Every test question displays BM25, semantic-baseline, and hybrid results side by
 RRF(document) = Σ weightᵢ / (k + rankᵢ(document))
 ```
 
-The UI exposes keyword rank, semantic rank, fused score, source, chunk, and per-channel latency. The deterministic local semantic baseline makes the product usable without an API key; the retrieval interface can be replaced with a dense embedding provider or pgvector.
+The UI exposes keyword rank, semantic rank, fused score, source, chunk, and per-channel latency. Production uses Pinecone's integrated `llama-text-embed-v2` index; local development falls back to deterministic feature hashing without an API key.
+
+### Agentic retrieval
+
+The bounded retrieval orchestrator plans intent and modalities, generates query variants, runs hybrid retrieval, fuses results across queries, grades evidence, expands neighboring chunks, and either returns grounded context or abstains. Every decision is returned as an inspectable trace.
 
 ### Guardrail studio
 
@@ -66,8 +70,9 @@ DemandLens demonstrates mixed structured and unstructured evidence:
 Browser control plane
         │
 FastAPI application
-        ├── Knowledge source registry + chunker
-        ├── BM25 / semantic baseline / weighted RRF
+        ├── PostgreSQL knowledge registry + chunker
+        ├── BM25 / Pinecone dense retrieval / weighted RRF
+        ├── Multi-query planner + evidence grader
         ├── Structured guardrail policy engine
         ├── Evaluation runner
         ├── Incident inbox
@@ -96,6 +101,8 @@ Open `http://localhost:8000`; API documentation is available at `/docs`.
 | `POST` | `/api/studio/sources/upload` | Upload and extract a knowledge file |
 | `GET` | `/api/studio/sources/{id}/chunks` | Inspect chunk boundaries |
 | `POST` | `/api/studio/retrieval/compare` | Compare three retrievers |
+| `POST` | `/api/studio/agentic-query` | Run bounded multi-query RAG orchestration |
+| `POST` | `/api/studio/vector/sync` | Reconcile indexed chunks with Pinecone |
 | `GET/PUT` | `/api/studio/guardrails/{key}` | Read or update policies |
 | `POST` | `/api/studio/test` | Test the active guardrails |
 | `GET/POST` | `/api/studio/evaluations` | Manage evaluation cases |
@@ -114,7 +121,7 @@ The tests cover file validation, Markdown/HTML/DOCX extraction, ingestion, dedup
 
 ## Current MVP boundaries
 
-- The hosted demo uses an in-memory SQLite workspace, so operator changes reset when the service restarts. Production persistence should use PostgreSQL and object storage.
+- Production uses PostgreSQL when `DATABASE_URL` is configured; local development uses a persistent SQLite file. Original file bytes still require object storage before uploaded originals can be downloaded later.
 - File ingestion and extraction are implemented synchronously for the MVP. Production should move extraction to SQS workers, scan originals for malware, and store them in S3.
 - LangSmith tracing remains available in the original model path. The incident schema includes a trace URL extension point; syncing LangSmith feedback and runs is the next integration.
 - This is currently a single-workspace product without authentication. Multi-user use requires identity, tenant isolation, encrypted secrets, audit logs, and authorization tests.

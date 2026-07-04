@@ -11,7 +11,7 @@ from config import get_settings
 from models import (
     ChatRequest, ChatResponse, DemandAnswer, DemandQuestion, EvaluationCreate,
     GuardrailUpdate, HealthResponse, MetricsResponse, RetrievalQuery, SourceCreate,
-    StudioQuery,
+    StudioQuery, AgenticRAGQuery,
 )
 from security_patterns import SecurePipeline
 from cache import ResponseCache
@@ -21,6 +21,9 @@ from demand_lens import DemandLensService
 from demand_lens.database import connect
 from demand_lens.studio import KnowledgeOpsStudio
 from demand_lens.ingestion import MAX_FILE_BYTES, UploadValidationError, validate_and_extract
+from demand_lens.postgres import connect_postgres, initialize_postgres
+from demand_lens.vector_store import create_vector_store
+from demand_lens.rag_orchestrator import AgenticRAGOrchestrator
 
 load_dotenv()
 
@@ -30,13 +33,14 @@ metrics = None
 agent = None
 demand_lens = None
 studio = None
+rag_orchestrator = None
 logger = get_logger()
 
 limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global security, cache, metrics, agent, demand_lens, studio
+    global security, cache, metrics, agent, demand_lens, studio, rag_orchestrator
 
     settings = get_settings()
 
@@ -48,9 +52,22 @@ async def lifespan(app: FastAPI):
     agent = ProductionAgent()
     planning_db = connect()
     demand_lens = DemandLensService(planning_db)
-    studio = KnowledgeOpsStudio(planning_db)
+    if settings.database_url:
+        studio_db = connect_postgres(settings.database_url)
+        initialize_postgres(studio_db)
+    else:
+        studio_db = connect(settings.groundwire_sqlite_path)
+        from demand_lens.database import initialize
+        initialize(studio_db)
+    vector_store = create_vector_store(settings)
+    studio = KnowledgeOpsStudio(studio_db, vector_store, settings.pinecone_namespace)
+    indexed_chunks = studio.sync_vector_store()
+    rag_orchestrator = AgenticRAGOrchestrator(studio)
 
-    logger.info("All components initialized. Ready to serve requests.")
+    logger.info(
+        "All components initialized. Ready to serve requests.",
+        extra={"extra_data": {"persistence": getattr(studio_db, "dialect", "sqlite"), "vector_store": vector_store.provider, "indexed_chunks": indexed_chunks}},
+    )
 
     yield
 
@@ -152,6 +169,11 @@ def studio_compare_retrieval(body: RetrievalQuery):
     return studio.compare_retrieval(body.query, body.limit)
 
 
+@app.post("/api/studio/vector/sync")
+def studio_sync_vectors():
+    return {"indexed_chunks": studio.sync_vector_store(), "provider": studio.vector_store.provider}
+
+
 @app.get("/api/studio/guardrails")
 def studio_guardrails():
     return {"guardrails": studio.list_guardrails()}
@@ -168,6 +190,11 @@ def studio_update_guardrail(policy_key: str, body: GuardrailUpdate):
 @app.post("/api/studio/test")
 def studio_test_query(body: StudioQuery):
     return studio.guarded_query(body.question)
+
+
+@app.post("/api/studio/agentic-query")
+def studio_agentic_query(body: AgenticRAGQuery):
+    return rag_orchestrator.run(body.question, body.limit)
 
 
 @app.get("/api/studio/evaluations")
@@ -202,6 +229,7 @@ async def health():
         "cache": cache is not None,
         "demand_lens": demand_lens is not None,
         "knowledge_ops_studio": studio is not None,
+        "agentic_rag": rag_orchestrator is not None,
     }
 
     all_healthy = all(checks.values())

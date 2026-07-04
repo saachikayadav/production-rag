@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 300
     max_retries: int = 3
 
+    # Groundwire persistence and dense retrieval
+    database_url: str = ""
+    groundwire_sqlite_path: str = "groundwire.db"
+    groundwire_workspace_id: str = "workspace-default"
+    pinecone_api_key: str = ""
+    pinecone_index_host: str = ""
+    pinecone_index_name: str = "groundwire-chunks"
+    pinecone_namespace: str = "workspace-default"
+    pinecone_text_field: str = "chunk_text"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

@@ -12,6 +12,7 @@ from typing import Any
 
 from .ingestion import ExtractedDocument, ExtractedSection
 from .retrieval import HybridRetriever, tokenize
+from .vector_store import LocalVectorStore, VectorStore
 
 
 INJECTION_PATTERNS = [
@@ -47,8 +48,14 @@ def chunk_text(text: str, size: int = 700, overlap: int = 100) -> list[str]:
 
 
 class KnowledgeOpsStudio:
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(self, connection: Any, vector_store: VectorStore | None = None, namespace: str = "workspace-default"):
         self.connection = connection
+        self.vector_store = vector_store or LocalVectorStore()
+        self.namespace = namespace
+
+    def _scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        row = self.connection.execute(sql, params).fetchone()
+        return next(iter(row.values())) if isinstance(row, dict) else row[0]
 
     def _persist_sections(self, source_id: str, sections: list[ExtractedSection]) -> int:
         position = 0
@@ -58,9 +65,13 @@ class KnowledgeOpsStudio:
                 position += 1
                 chunk_id = f"{source_id}::chunk-{position}"
                 self.connection.execute(
-                    """INSERT OR REPLACE INTO knowledge_chunks
+                    """INSERT INTO knowledge_chunks
                     (chunk_id, source_id, parent_id, position, page_number, section_path, content, character_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(chunk_id) DO UPDATE SET
+                    parent_id=excluded.parent_id, position=excluded.position,
+                    page_number=excluded.page_number, section_path=excluded.section_path,
+                    content=excluded.content, character_count=excluded.character_count""",
                     (
                         chunk_id, source_id, parent_id, position, section.page_number,
                         section.section_path, content, len(content),
@@ -104,10 +115,10 @@ class KnowledgeOpsStudio:
         return documents
 
     def overview(self) -> dict[str, Any]:
-        source_count = self.connection.execute("SELECT COUNT(*) FROM knowledge_sources").fetchone()[0]
-        incident_count = self.connection.execute("SELECT COUNT(*) FROM incidents WHERE status = 'open'").fetchone()[0]
-        enabled = self.connection.execute("SELECT COUNT(*) FROM guardrail_policies WHERE enabled = 1").fetchone()[0]
-        cases = self.connection.execute("SELECT COUNT(*) FROM evaluation_cases").fetchone()[0]
+        source_count = self._scalar("SELECT COUNT(*) FROM knowledge_sources")
+        incident_count = self._scalar("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
+        enabled = self._scalar("SELECT COUNT(*) FROM guardrail_policies WHERE enabled = 1")
+        cases = self._scalar("SELECT COUNT(*) FROM evaluation_cases")
         return {
             "workspace": "DemandLens Production",
             "sources": source_count,
@@ -115,6 +126,8 @@ class KnowledgeOpsStudio:
             "enabled_guardrails": enabled,
             "evaluation_cases": cases,
             "open_incidents": incident_count,
+            "dense_retrieval_provider": self.vector_store.provider,
+            "persistence_provider": getattr(self.connection, "dialect", "sqlite"),
             "published_assistant": {"name": "DemandLens", "status": "live", "endpoint": "/api/ask"},
         }
 
@@ -124,9 +137,9 @@ class KnowledgeOpsStudio:
             self._ensure_chunks(row)
             item = dict(row)
             item["character_count"] = len(item.pop("content"))
-            item["chunk_count"] = self.connection.execute(
+            item["chunk_count"] = self._scalar(
                 "SELECT COUNT(*) FROM knowledge_chunks WHERE source_id = ?", (row["source_id"],)
-            ).fetchone()[0]
+            )
             file_row = self.connection.execute(
                 "SELECT original_filename, mime_type, byte_size, version, extraction_method FROM source_files WHERE source_id = ?",
                 (row["source_id"],),
@@ -147,11 +160,12 @@ class KnowledgeOpsStudio:
             raise ValueError(f"Duplicate content already exists as {duplicate['source_id']}")
         source_id = f"src-{uuid.uuid4().hex[:10]}"
         self.connection.execute(
-            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash, status) VALUES (?, ?, ?, ?, ?, 'indexing')",
             (source_id, name.strip(), source_type, normalized, digest),
         )
         chunk_count = self._persist_sections(source_id, [ExtractedSection(normalized, name.strip())])
         self.connection.commit()
+        self._finish_indexing(source_id)
         return {"source_id": source_id, "name": name.strip(), "status": "indexed", "chunk_count": chunk_count}
 
     def add_uploaded_source(self, document: ExtractedDocument) -> dict[str, Any]:
@@ -164,7 +178,7 @@ class KnowledgeOpsStudio:
             raise ValueError(f"Duplicate content already exists as {duplicate['source_id']}")
         source_id = f"src-{uuid.uuid4().hex[:10]}"
         self.connection.execute(
-            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO knowledge_sources(source_id, name, source_type, content, content_hash, status) VALUES (?, ?, ?, ?, ?, 'indexing')",
             (source_id, document.filename, "file", normalized, digest),
         )
         self.connection.execute(
@@ -175,6 +189,7 @@ class KnowledgeOpsStudio:
         )
         chunk_count = self._persist_sections(source_id, document.sections)
         self.connection.commit()
+        self._finish_indexing(source_id)
         return {
             "source_id": source_id, "name": document.filename, "status": "indexed",
             "chunk_count": chunk_count, "mime_type": document.mime_type,
@@ -202,10 +217,19 @@ class KnowledgeOpsStudio:
         bm25_raw = retriever._bm25(query)[:limit]
         bm25_ms = (time.perf_counter() - started) * 1000
         started = time.perf_counter()
-        semantic_raw = retriever._semantic(query)[:limit]
+        dense_matches = self.vector_store.search(self.namespace, query, documents, limit)
+        by_id = {document["id"]: index for index, document in enumerate(documents)}
+        semantic_raw = [(by_id[match.chunk_id], match.score) for match in dense_matches if match.chunk_id in by_id]
         semantic_ms = (time.perf_counter() - started) * 1000
         started = time.perf_counter()
-        hybrid_raw = retriever.search(query, limit=limit)
+        bm25_ranks = {index: rank for rank, (index, _score) in enumerate(bm25_raw, 1)}
+        semantic_ranks = {index: rank for rank, (index, _score) in enumerate(semantic_raw, 1)}
+        candidates = set(bm25_ranks) | set(semantic_ranks)
+        fused = sorted(
+            candidates,
+            key=lambda index: 0.45 / (60 + bm25_ranks.get(index, 10_000)) + 0.55 / (60 + semantic_ranks.get(index, 10_000)),
+            reverse=True,
+        )[:limit]
         hybrid_ms = (time.perf_counter() - started) * 1000
 
         def basic(items: list[tuple[int, float]]) -> list[dict[str, Any]]:
@@ -229,21 +253,39 @@ class KnowledgeOpsStudio:
             "hybrid": {
                 "latency_ms": round(hybrid_ms, 2),
                 "weights": {"bm25": 0.45, "semantic": 0.55, "rrf_k": 60},
+                "provider": self.vector_store.provider,
                 "results": [
                     {
                         "rank": rank,
-                        "chunk_id": item.document["id"],
-                        "source_id": item.document["source_id"],
-                        "title": item.document["title"],
-                        "content": item.document["content"],
-                        "score": round(item.fused_score, 6),
-                        "bm25_rank": item.bm25_rank,
-                        "semantic_rank": item.semantic_rank,
+                        "chunk_id": documents[index]["id"],
+                        "source_id": documents[index]["source_id"],
+                        "title": documents[index]["title"],
+                        "content": documents[index]["content"],
+                        "score": round(0.45 / (60 + bm25_ranks.get(index, 10_000)) + 0.55 / (60 + semantic_ranks.get(index, 10_000)), 6),
+                        "bm25_rank": bm25_ranks.get(index),
+                        "semantic_rank": semantic_ranks.get(index),
                     }
-                    for rank, item in enumerate(hybrid_raw, 1)
+                    for rank, index in enumerate(fused, 1)
                 ],
             },
         }
+
+    def _finish_indexing(self, source_id: str) -> None:
+        try:
+            self.connection.execute("UPDATE knowledge_sources SET status = 'indexed' WHERE source_id = ?", (source_id,))
+            self.connection.commit()
+            documents = [doc for doc in self._documents() if doc["source_id"] == source_id]
+            self.vector_store.upsert(self.namespace, documents)
+        except Exception:
+            self.connection.rollback()
+            self.connection.execute("UPDATE knowledge_sources SET status = 'failed' WHERE source_id = ?", (source_id,))
+            self.connection.commit()
+            raise
+
+    def sync_vector_store(self) -> int:
+        documents = self._documents()
+        self.vector_store.upsert(self.namespace, documents)
+        return len(documents)
 
     def list_guardrails(self) -> list[dict[str, Any]]:
         return [
@@ -340,12 +382,13 @@ class KnowledgeOpsStudio:
         return [dict(row) for row in self.connection.execute("SELECT * FROM evaluation_cases ORDER BY case_id")]
 
     def add_evaluation(self, question: str, expected_source_id: str | None, expected_behavior: str, tags: str) -> dict[str, Any]:
-        cursor = self.connection.execute(
+        self.connection.execute(
             "INSERT INTO evaluation_cases(question, expected_source_id, expected_behavior, tags) VALUES (?, ?, ?, ?)",
             (question, expected_source_id, expected_behavior, tags),
         )
         self.connection.commit()
-        return dict(self.connection.execute("SELECT * FROM evaluation_cases WHERE case_id = ?", (cursor.lastrowid,)).fetchone())
+        case_id = self._scalar("SELECT MAX(case_id) FROM evaluation_cases")
+        return dict(self.connection.execute("SELECT * FROM evaluation_cases WHERE case_id = ?", (case_id,)).fetchone())
 
     def run_evaluations(self) -> dict[str, Any]:
         details = []

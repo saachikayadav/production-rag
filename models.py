@@ -79,3 +79,8 @@ class EvaluationCreate(BaseModel):
 
 class StudioQuery(BaseModel):
     question: str = Field(..., min_length=2, max_length=1000)
+
+
+class AgenticRAGQuery(BaseModel):
+    question: str = Field(..., min_length=2, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=10)
