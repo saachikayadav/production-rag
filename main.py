@@ -202,10 +202,34 @@ def studio_compare_retrieval(body: RetrievalQuery):
 
 @app.post("/api/retrieve", response_model=RetrievalResponse)
 def retrieve(body: RetrievalQuery):
-    return {
-        **studio.retrieve(body.query, body.limit),
-        "request_id": f"req-{uuid.uuid4().hex[:12]}",
-    }
+    request_id = f"req-{uuid.uuid4().hex[:12]}"
+    try:
+        return {
+            **studio.retrieve(body.query, body.limit),
+            "request_id": request_id,
+        }
+    except Exception as exc:
+        error_detail = f"{type(exc).__name__}: {str(exc)[:500]}"
+        logger.error(
+            "Production retrieval failed",
+            extra={
+                "extra_data": {
+                    "request_id": request_id,
+                    "provider": getattr(studio.vector_store, "provider", "unknown"),
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                }
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Production retrieval failed",
+                "provider": getattr(studio.vector_store, "provider", "unknown"),
+                "request_id": request_id,
+                "error": error_detail,
+            },
+        ) from exc
 
 
 @app.post("/api/studio/vector/sync")
