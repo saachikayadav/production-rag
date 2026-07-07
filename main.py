@@ -1,4 +1,5 @@
-import time
+import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Request, HTTPException, UploadFile
@@ -10,7 +11,7 @@ from langsmith import traceable
 from config import get_settings
 from models import (
     ChatRequest, ChatResponse, DemandAnswer, DemandQuestion, EvaluationCreate,
-    GuardrailUpdate, HealthResponse, MetricsResponse, RetrievalQuery, SourceCreate,
+    GuardrailUpdate, HealthResponse, MetricsResponse, RetrievalQuery, RetrievalResponse, SourceCreate,
     StudioQuery, AgenticRAGQuery,
 )
 from security_patterns import SecurePipeline
@@ -61,16 +62,46 @@ async def lifespan(app: FastAPI):
         initialize(studio_db)
     vector_store = create_vector_store(settings)
     studio = KnowledgeOpsStudio(studio_db, vector_store, settings.pinecone_namespace)
-    indexed_chunks = studio.sync_vector_store()
     rag_orchestrator = AgenticRAGOrchestrator(studio)
+
+    app.state.system_status = {
+        "database": getattr(studio_db, "dialect", "sqlite"),
+        "vector_store": vector_store.provider,
+        "vector_sync": "starting",
+        "indexed_chunks": 0,
+        "vector_error": None,
+    }
+
+    async def sync_vectors_without_blocking_startup():
+        app.state.system_status["vector_sync"] = "running"
+        try:
+            count = await asyncio.to_thread(studio.sync_vector_store)
+            app.state.system_status.update(
+                {"vector_sync": "ready", "indexed_chunks": count, "vector_error": None}
+            )
+        except Exception as exc:
+            app.state.system_status.update(
+                {"vector_sync": "degraded", "vector_error": type(exc).__name__}
+            )
+            logger.error(
+                "Vector synchronization failed; API remains available",
+                extra={"extra_data": {"error_type": type(exc).__name__}},
+            )
+
+    app.state.vector_sync_task = asyncio.create_task(sync_vectors_without_blocking_startup())
 
     logger.info(
         "All components initialized. Ready to serve requests.",
-        extra={"extra_data": {"persistence": getattr(studio_db, "dialect", "sqlite"), "vector_store": vector_store.provider, "indexed_chunks": indexed_chunks}},
+        extra={"extra_data": {"persistence": getattr(studio_db, "dialect", "sqlite"), "vector_store": vector_store.provider, "vector_sync": "background"}},
     )
 
     yield
 
+    if not app.state.vector_sync_task.done():
+        app.state.vector_sync_task.cancel()
+    if hasattr(studio_db, "close"):
+        studio_db.close()
+    planning_db.close()
     logger.info("Shutting down...")
 
 
@@ -123,8 +154,8 @@ async def demand_question(request: Request, body: DemandQuestion):
 
 
 @app.get("/api/studio/overview")
-def studio_overview():
-    return studio.overview()
+def studio_overview(request: Request):
+    return {**studio.overview(), "system_status": request.app.state.system_status}
 
 
 @app.get("/api/studio/sources")
@@ -169,9 +200,27 @@ def studio_compare_retrieval(body: RetrievalQuery):
     return studio.compare_retrieval(body.query, body.limit)
 
 
+@app.post("/api/retrieve", response_model=RetrievalResponse)
+def retrieve(body: RetrievalQuery):
+    return {
+        **studio.retrieve(body.query, body.limit),
+        "request_id": f"req-{uuid.uuid4().hex[:12]}",
+    }
+
+
 @app.post("/api/studio/vector/sync")
-def studio_sync_vectors():
-    return {"indexed_chunks": studio.sync_vector_store(), "provider": studio.vector_store.provider}
+def studio_sync_vectors(request: Request):
+    try:
+        count = studio.sync_vector_store()
+        request.app.state.system_status.update(
+            {"vector_sync": "ready", "indexed_chunks": count, "vector_error": None}
+        )
+        return {"indexed_chunks": count, "provider": studio.vector_store.provider}
+    except Exception as exc:
+        request.app.state.system_status.update(
+            {"vector_sync": "degraded", "vector_error": type(exc).__name__}
+        )
+        raise HTTPException(status_code=503, detail="Vector synchronization failed") from exc
 
 
 @app.get("/api/studio/guardrails")
@@ -195,6 +244,21 @@ def studio_test_query(body: StudioQuery):
 @app.post("/api/studio/agentic-query")
 def studio_agentic_query(body: AgenticRAGQuery):
     return rag_orchestrator.run(body.question, body.limit)
+
+
+@app.post("/api/studio/assistant")
+def studio_knowledge_assistant(body: StudioQuery):
+    guard_result = studio.guarded_query(body.question)
+    if guard_result["status"] != "answered":
+        message = (
+            "This question was blocked by a safety rule."
+            if guard_result["status"] == "blocked"
+            else "I could not find enough evidence in your uploaded knowledge to answer that safely."
+        )
+        return {**guard_result, "answer": message, "citations": [], "trace": guard_result["events"]}
+    result = rag_orchestrator.run(guard_result["processed_question"])
+    result["guardrail_events"] = guard_result["events"]
+    return result
 
 
 @app.get("/api/studio/evaluations")
@@ -230,6 +294,8 @@ async def health():
         "demand_lens": demand_lens is not None,
         "knowledge_ops_studio": studio is not None,
         "agentic_rag": rag_orchestrator is not None,
+        "database": getattr(app.state, "system_status", {}).get("database") in {"sqlite", "postgresql"},
+        "vector_service": getattr(app.state, "system_status", {}).get("vector_sync") != "degraded",
     }
 
     all_healthy = all(checks.values())
@@ -239,6 +305,13 @@ async def health():
         environment=settings.app_env,
         checks=checks,
     )
+
+
+@app.get("/ready")
+async def readiness(request: Request):
+    status = request.app.state.system_status
+    ready = status["database"] in {"sqlite", "postgresql"} and status["vector_sync"] == "ready"
+    return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, **status})
 
 @app.get("/metrics", response_model=MetricsResponse)
 async def get_metrics():

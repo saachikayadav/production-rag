@@ -76,12 +76,29 @@ class AgenticRAGOrchestrator:
         trace.append({"stage": "evidence_grade", "status": status, "detail": {"strength": round(evidence_strength, 3), "source_diversity": source_diversity}})
         context = self.studio._pack_context(fused) if status == "answered" else []
         trace.append({"stage": "context_expand_and_pack", "status": "ok", "detail": {"chunks": len(context), "characters": sum(item["character_count"] for item in context)}})
+        citations = [
+            {
+                "chunk_id": result["chunk_id"],
+                "source_id": result["source_id"],
+                "title": result["title"],
+            }
+            for result in fused[:3]
+        ]
+        if status == "answered" and fused:
+            # An extractive answer is intentionally used here: it cannot invent
+            # facts outside the indexed source. Model synthesis can be layered on
+            # later while retaining the same evidence contract.
+            answer = fused[0]["content"].split("\n\n", 1)[-1].strip()
+        else:
+            answer = "I could not find enough evidence in your uploaded knowledge to answer that safely."
         return {
             "run_id": run_id,
             "status": status,
             "plan": asdict(plan),
             "results": fused,
             "context": context,
+            "answer": answer,
+            "citations": citations,
             "trace": trace,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         }

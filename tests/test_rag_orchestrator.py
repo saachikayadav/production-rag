@@ -25,3 +25,18 @@ def test_agentic_retrieval_emits_observable_bounded_trace():
         "plan", "multi_query_retrieval", "cross_query_fusion", "evidence_grade", "context_expand_and_pack"
     ]
     assert result["context"]
+    assert "Forecast bias" in result["answer"]
+    assert result["citations"][0]["source_id"] == "forecast-metrics-1"
+
+
+def test_uploaded_knowledge_becomes_the_grounded_answer():
+    connection = connect()
+    initialize(connection)
+    studio = KnowledgeOpsStudio(connection)
+    source = studio.add_source(
+        "Moonlight refund policy",
+        "The Moonlight refund window is exactly forty-five days after the original purchase date.",
+    )
+    result = AgenticRAGOrchestrator(studio).run("How long is the Moonlight refund window?")
+    assert "forty-five days" in result["answer"]
+    assert result["citations"][0]["source_id"] == source["source_id"]

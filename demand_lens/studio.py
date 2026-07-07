@@ -270,6 +270,18 @@ class KnowledgeOpsStudio:
             },
         }
 
+    def retrieve(self, query: str, limit: int = 5) -> dict[str, Any]:
+        """Run the configured hybrid retriever only, for production latency tests."""
+        started = time.perf_counter()
+        comparison = self.compare_retrieval(query, limit)
+        retrieval_ms = (time.perf_counter() - started) * 1000
+        hybrid = comparison["hybrid"]
+        return {
+            "results": hybrid["results"],
+            "retrieval_ms": round(retrieval_ms, 2),
+            "provider": hybrid["provider"],
+        }
+
     def _finish_indexing(self, source_id: str) -> None:
         try:
             self.connection.execute("UPDATE knowledge_sources SET status = 'indexed' WHERE source_id = ?", (source_id,))

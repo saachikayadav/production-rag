@@ -65,6 +65,24 @@ class RetrievalQuery(BaseModel):
     limit: int = Field(default=5, ge=1, le=10)
 
 
+class RetrievalResultItem(BaseModel):
+    rank: int
+    chunk_id: str
+    source_id: str
+    title: str
+    content: str
+    score: float
+    bm25_rank: int | None = None
+    semantic_rank: int | None = None
+
+
+class RetrievalResponse(BaseModel):
+    results: list[RetrievalResultItem]
+    retrieval_ms: float
+    provider: str
+    request_id: str
+
+
 class GuardrailUpdate(BaseModel):
     enabled: bool
     config: dict = Field(default_factory=dict)

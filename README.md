@@ -101,6 +101,7 @@ Open `http://localhost:8000`; API documentation is available at `/docs`.
 | `POST` | `/api/studio/sources/upload` | Upload and extract a knowledge file |
 | `GET` | `/api/studio/sources/{id}/chunks` | Inspect chunk boundaries |
 | `POST` | `/api/studio/retrieval/compare` | Compare three retrievers |
+| `POST` | `/api/retrieve` | Run the configured hybrid retriever for production latency tests |
 | `POST` | `/api/studio/agentic-query` | Run bounded multi-query RAG orchestration |
 | `POST` | `/api/studio/vector/sync` | Reconcile indexed chunks with Pinecone |
 | `GET/PUT` | `/api/studio/guardrails/{key}` | Read or update policies |
@@ -118,6 +119,48 @@ python evaluation.py
 ```
 
 The tests cover file validation, Markdown/HTML/DOCX extraction, ingestion, deduplication, parent and neighbor context, chunk provenance, retrieval ranking, guardrail enforcement and toggles, PII masking, incidents, evaluation metrics, SQL safety, and mixed RAG/SQL answers.
+
+## Production retrieval benchmark
+
+Use `/api/retrieve` for retrieval-only performance claims. Do not benchmark `/api/studio/retrieval/compare` or the assistant-generation endpoints and describe the result as retrieval latency.
+
+Warm the deployed service first:
+
+```bash
+curl https://production-rag-1.onrender.com/ready
+```
+
+Then run k6 against the deployed URL:
+
+```bash
+k6 run \
+  --summary-export=results-25-users-run-1.json \
+  -e BASE_URL=https://production-rag-1.onrender.com \
+  -e VUS=25 \
+  -e DURATION=5m \
+  load-tests/retrieval.js
+```
+
+To create a public-demo-safe synthetic corpus before testing:
+
+```bash
+python scripts/seed_synthetic_corpus.py \
+  --base-url https://production-rag-1.onrender.com \
+  --documents 60 \
+  --sections-per-document 170
+```
+
+Run 1, 10, 25, and 50 virtual users three times each. Report the median sustained run, including requests, req/s, p50, p95, p99, and error rate. A production-performance claim should also disclose the corpus and infrastructure:
+
+- Number of documents
+- Number of chunks
+- Average chunk length
+- Pinecone index/model
+- Render instance type
+
+Example claim format:
+
+> Sustained X requests/second at 25 concurrent users with Y ms p95 retrieval latency and Z% errors across N requests over a 10,000-chunk Pinecone corpus.
 
 ## Current MVP boundaries
 
