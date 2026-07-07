@@ -69,23 +69,34 @@ async def lifespan(app: FastAPI):
         "vector_store": vector_store.provider,
         "vector_sync": "starting",
         "indexed_chunks": 0,
+        "total_chunks": 0,
+        "batch_size": 100,
         "vector_error": None,
     }
 
     async def sync_vectors_without_blocking_startup():
         app.state.system_status["vector_sync"] = "running"
         try:
-            count = await asyncio.to_thread(studio.sync_vector_store)
+            def progress(indexed, total):
+                app.state.system_status.update({"indexed_chunks": indexed, "total_chunks": total})
+
+            result = await asyncio.to_thread(studio.sync_vector_store_batched, 100, progress)
             app.state.system_status.update(
-                {"vector_sync": "ready", "indexed_chunks": count, "vector_error": None}
+                {
+                    "vector_sync": "ready",
+                    "indexed_chunks": result["indexed_chunks"],
+                    "total_chunks": result["total_chunks"],
+                    "batch_size": result["batch_size"],
+                    "vector_error": None,
+                }
             )
         except Exception as exc:
             app.state.system_status.update(
-                {"vector_sync": "degraded", "vector_error": type(exc).__name__}
+                {"vector_sync": "degraded", "vector_error": f"{type(exc).__name__}: {str(exc)[:500]}"}
             )
             logger.error(
                 "Vector synchronization failed; API remains available",
-                extra={"extra_data": {"error_type": type(exc).__name__}},
+                extra={"extra_data": {"error_type": type(exc).__name__, "error_message": str(exc)[:500]}},
             )
 
     app.state.vector_sync_task = asyncio.create_task(sync_vectors_without_blocking_startup())
@@ -232,37 +243,70 @@ def retrieve(body: RetrievalQuery):
         ) from exc
 
 
-@app.post("/api/studio/vector/sync")
-def studio_sync_vectors(request: Request):
-    try:
-        count = studio.sync_vector_store()
-        request.app.state.system_status.update(
-            {"vector_sync": "ready", "indexed_chunks": count, "vector_error": None}
-        )
-        return {"indexed_chunks": count, "provider": studio.vector_store.provider}
-    except Exception as exc:
-        error_detail = f"{type(exc).__name__}: {str(exc)[:500]}"
-        request.app.state.system_status.update(
-            {"vector_sync": "degraded", "vector_error": error_detail}
-        )
-        logger.error(
-            "Vector synchronization failed",
-            extra={
-                "extra_data": {
-                    "provider": studio.vector_store.provider,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc)[:500],
+@app.post("/api/studio/vector/sync", status_code=202)
+async def studio_sync_vectors(request: Request, batch_size: int = 100):
+    existing_task = getattr(request.app.state, "vector_sync_task", None)
+    if existing_task and not existing_task.done():
+        return {
+            "status": "already_running",
+            "provider": studio.vector_store.provider,
+            **request.app.state.system_status,
+        }
+
+    batch_size = max(1, min(batch_size, 250))
+    request.app.state.system_status.update(
+        {
+            "vector_sync": "queued",
+            "indexed_chunks": 0,
+            "total_chunks": 0,
+            "batch_size": batch_size,
+            "vector_error": None,
+        }
+    )
+
+    async def run_sync_job():
+        request.app.state.system_status["vector_sync"] = "running"
+        try:
+            def progress(indexed, total):
+                request.app.state.system_status.update({"indexed_chunks": indexed, "total_chunks": total})
+
+            result = await asyncio.to_thread(studio.sync_vector_store_batched, batch_size, progress)
+            request.app.state.system_status.update(
+                {
+                    "vector_sync": "ready",
+                    "indexed_chunks": result["indexed_chunks"],
+                    "total_chunks": result["total_chunks"],
+                    "batch_size": result["batch_size"],
+                    "vector_error": None,
                 }
-            },
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": "Vector synchronization failed",
-                "provider": studio.vector_store.provider,
-                "error": error_detail,
-            },
-        ) from exc
+            )
+        except Exception as exc:
+            error_detail = f"{type(exc).__name__}: {str(exc)[:500]}"
+            request.app.state.system_status.update(
+                {"vector_sync": "degraded", "vector_error": error_detail}
+            )
+            logger.error(
+                "Vector synchronization failed",
+                extra={
+                    "extra_data": {
+                        "provider": studio.vector_store.provider,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc)[:500],
+                    }
+                },
+            )
+
+    request.app.state.vector_sync_task = asyncio.create_task(run_sync_job())
+    return {
+        "status": "started",
+        "provider": studio.vector_store.provider,
+        **request.app.state.system_status,
+    }
+
+
+@app.get("/api/studio/vector/sync/status")
+def studio_vector_sync_status(request: Request):
+    return {"provider": studio.vector_store.provider, **request.app.state.system_status}
 
 
 @app.get("/api/studio/guardrails")

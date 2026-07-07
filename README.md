@@ -103,7 +103,8 @@ Open `http://localhost:8000`; API documentation is available at `/docs`.
 | `POST` | `/api/studio/retrieval/compare` | Compare three retrievers |
 | `POST` | `/api/retrieve` | Run the configured hybrid retriever for production latency tests |
 | `POST` | `/api/studio/agentic-query` | Run bounded multi-query RAG orchestration |
-| `POST` | `/api/studio/vector/sync` | Reconcile indexed chunks with Pinecone |
+| `POST` | `/api/studio/vector/sync` | Start batched background reconciliation with Pinecone |
+| `GET` | `/api/studio/vector/sync/status` | Inspect vector sync progress and failures |
 | `GET/PUT` | `/api/studio/guardrails/{key}` | Read or update policies |
 | `POST` | `/api/studio/test` | Test the active guardrails |
 | `GET/POST` | `/api/studio/evaluations` | Manage evaluation cases |
@@ -134,10 +135,11 @@ Then run k6 against the deployed URL:
 
 ```bash
 k6 run \
-  --summary-export=results-25-users-run-1.json \
+  --summary-export=results-1-user-paced-run-1.json \
   -e BASE_URL=https://production-rag-1.onrender.com \
-  -e VUS=25 \
-  -e DURATION=5m \
+  -e VUS=1 \
+  -e DURATION=2m \
+  -e SLEEP_SECONDS=5 \
   load-tests/retrieval.js
 ```
 
@@ -147,10 +149,17 @@ To create a public-demo-safe synthetic corpus before testing:
 python scripts/seed_synthetic_corpus.py \
   --base-url https://production-rag-1.onrender.com \
   --documents 60 \
-  --sections-per-document 170
+  --sections-per-document 170 \
+  --sync-poll-seconds 5
 ```
 
-Run 1, 10, 25, and 50 virtual users three times each. Report the median sustained run, including requests, req/s, p50, p95, p99, and error rate. A production-performance claim should also disclose the corpus and infrastructure:
+Vector sync runs as a bounded background job and can be inspected separately:
+
+```bash
+curl https://production-rag-1.onrender.com/api/studio/vector/sync/status
+```
+
+On constrained free-tier infrastructure, report only successful low-concurrency runs. Do not claim production-scale throughput from rate-limited infrastructure. Pair latency with retrieval-quality metrics such as Recall@K, MRR, and citation precision. A benchmark should disclose the corpus and infrastructure:
 
 - Number of documents
 - Number of chunks
@@ -160,7 +169,7 @@ Run 1, 10, 25, and 50 virtual users three times each. Report the median sustaine
 
 Example claim format:
 
-> Sustained X requests/second at 25 concurrent users with Y ms p95 retrieval latency and Z% errors across N requests over a 10,000-chunk Pinecone corpus.
+> Measured X% Recall@3 and Y ms p95 retrieval latency at low concurrency over a 1,800-record synthetic demand-planning corpus, with vector sync redesigned from a monolithic request into batched background jobs.
 
 ## Current MVP boundaries
 

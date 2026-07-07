@@ -1,12 +1,14 @@
 import http from "k6/http";
 import { check } from "k6";
 import { Trend, Rate } from "k6/metrics";
+import { sleep } from "k6";
 
 const retrievalLatency = new Trend("retrieval_latency");
 const failures = new Rate("retrieval_failures");
 
 const vus = Number(__ENV.VUS || 25);
 const duration = __ENV.DURATION || "5m";
+const sleepSeconds = Number(__ENV.SLEEP_SECONDS || 2);
 
 export const options = {
   scenarios: {
@@ -62,4 +64,6 @@ export default function () {
   if (response.status === 200) {
     retrievalLatency.add(JSON.parse(response.body).retrieval_ms);
   }
+
+  sleep(sleepSeconds);
 }

@@ -114,6 +114,56 @@ class KnowledgeOpsStudio:
                 )
         return documents
 
+    @staticmethod
+    def _document_from_chunk(source: dict[str, Any], chunk: dict[str, Any]) -> dict[str, str]:
+        header = f"Document: {source['name']}\nSection: {chunk['section_path']}"
+        if chunk["page_number"]:
+            header += f"\nPage: {chunk['page_number']}"
+        return {
+            "id": chunk["chunk_id"],
+            "source_id": source["source_id"],
+            "title": source["name"],
+            "section": chunk["section_path"],
+            "content": f"{header}\n\n{chunk['content']}",
+            "source_type": source["source_type"],
+        }
+
+    def _ensure_all_chunks(self) -> None:
+        for source in self.connection.execute(
+            "SELECT source_id, name, source_type, content FROM knowledge_sources WHERE status = 'indexed' ORDER BY created_at"
+        ):
+            self._ensure_chunks(source)
+
+    def _document_batches(self, batch_size: int = 100):
+        self._ensure_all_chunks()
+        total = self._scalar(
+            """SELECT COUNT(*) FROM knowledge_chunks c
+            JOIN knowledge_sources s ON s.source_id = c.source_id
+            WHERE s.status = 'indexed'"""
+        )
+        offset = 0
+        while offset < total:
+            rows = self.connection.execute(
+                """SELECT c.chunk_id, c.source_id, c.position, c.page_number, c.section_path,
+                c.content, s.name, s.source_type
+                FROM knowledge_chunks c
+                JOIN knowledge_sources s ON s.source_id = c.source_id
+                WHERE s.status = 'indexed'
+                ORDER BY s.created_at, c.source_id, c.position
+                LIMIT ? OFFSET ?""",
+                (batch_size, offset),
+            ).fetchall()
+            if not rows:
+                break
+            yield [
+                self._document_from_chunk(
+                    {"source_id": row["source_id"], "name": row["name"], "source_type": row["source_type"]},
+                    dict(row),
+                )
+                for row in rows
+            ]
+            offset += len(rows)
+
     def overview(self) -> dict[str, Any]:
         source_count = self._scalar("SELECT COUNT(*) FROM knowledge_sources")
         incident_count = self._scalar("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
@@ -294,10 +344,23 @@ class KnowledgeOpsStudio:
             self.connection.commit()
             raise
 
+    def sync_vector_store_batched(self, batch_size: int = 100, progress=None) -> dict[str, Any]:
+        self._ensure_all_chunks()
+        total = self._scalar(
+            """SELECT COUNT(*) FROM knowledge_chunks c
+            JOIN knowledge_sources s ON s.source_id = c.source_id
+            WHERE s.status = 'indexed'"""
+        )
+        indexed = 0
+        for batch in self._document_batches(batch_size):
+            self.vector_store.upsert(self.namespace, batch)
+            indexed += len(batch)
+            if progress:
+                progress(indexed, total)
+        return {"indexed_chunks": indexed, "total_chunks": total, "batch_size": batch_size}
+
     def sync_vector_store(self) -> int:
-        documents = self._documents()
-        self.vector_store.upsert(self.namespace, documents)
-        return len(documents)
+        return self.sync_vector_store_batched()["indexed_chunks"]
 
     def list_guardrails(self) -> list[dict[str, Any]]:
         return [

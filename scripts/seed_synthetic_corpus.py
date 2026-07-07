@@ -115,10 +115,34 @@ def sync_vectors(base_url: str, api_key: str | None) -> dict:
     return response.json()
 
 
-def sync_vectors_with_retries(base_url: str, api_key: str | None, retries: int) -> dict | None:
+def vector_sync_status(base_url: str, api_key: str | None) -> dict:
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    response = requests.get(
+        f"{base_url.rstrip('/')}/api/studio/vector/sync/status",
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def sync_vectors_with_retries(base_url: str, api_key: str | None, retries: int, poll_seconds: int) -> dict | None:
     for attempt in range(1, retries + 2):
         try:
-            return sync_vectors(base_url, api_key)
+            started = sync_vectors(base_url, api_key)
+            print(f"vector sync {started.get('status', 'started')}: provider={started.get('provider')}")
+            while True:
+                time.sleep(poll_seconds)
+                status = vector_sync_status(base_url, api_key)
+                print(
+                    "vector sync status: "
+                    f"{status.get('vector_sync')} "
+                    f"{status.get('indexed_chunks', 0)}/{status.get('total_chunks', 0)}"
+                )
+                if status.get("vector_sync") in {"ready", "degraded"}:
+                    return status
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             detail = exc.response.text[:300] if exc.response is not None else str(exc)
@@ -144,6 +168,7 @@ def main() -> None:
     parser.add_argument("--delay-seconds", type=float, default=1.0, help="Pause between ingestions to avoid overwhelming the deployed service")
     parser.add_argument("--retries", type=int, default=3, help="Retries for temporary 5xx responses")
     parser.add_argument("--sync-retries", type=int, default=5, help="Retries for temporary vector sync failures")
+    parser.add_argument("--sync-poll-seconds", type=int, default=5, help="Seconds between vector sync status checks")
     parser.add_argument("--stop-on-conflict", action="store_true", help="Fail instead of skipping duplicate synthetic documents")
     parser.add_argument("--skip-vector-sync", action="store_true")
     args = parser.parse_args()
@@ -173,7 +198,7 @@ def main() -> None:
 
     vector_sync = None
     if not args.skip_vector_sync:
-        vector_sync = sync_vectors_with_retries(args.base_url, args.api_key, args.sync_retries)
+        vector_sync = sync_vectors_with_retries(args.base_url, args.api_key, args.sync_retries, args.sync_poll_seconds)
 
     elapsed = time.perf_counter() - started
     print("\nCorpus summary")

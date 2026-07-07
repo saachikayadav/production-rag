@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import dataclass
+from typing import Callable
 from typing import Protocol
 
 from .retrieval import cosine, hashed_embedding
@@ -46,6 +49,22 @@ class PineconeVectorStore:
         self.index = Pinecone(api_key=api_key).Index(host=host)
         self.text_field = text_field
 
+    @staticmethod
+    def _is_throttle_error(exc: Exception) -> bool:
+        message = str(exc)
+        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+        return status == 429 or "429" in message or "Too Many Requests" in message or "RESOURCE_EXHAUSTED" in message
+
+    def _with_backoff(self, operation: Callable, *, attempts: int = 5):
+        for attempt in range(1, attempts + 1):
+            try:
+                return operation()
+            except Exception as exc:
+                if not self._is_throttle_error(exc) or attempt == attempts:
+                    raise
+                sleep_seconds = min(30, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+
     def upsert(self, namespace: str, documents: list[dict[str, str]]) -> None:
         records = [
             {
@@ -58,13 +77,16 @@ class PineconeVectorStore:
             for document in documents
         ]
         for start in range(0, len(records), 96):
-            self.index.upsert_records(namespace, records[start : start + 96])
+            batch = records[start : start + 96]
+            self._with_backoff(lambda batch=batch: self.index.upsert_records(namespace, batch))
 
     def search(self, namespace: str, query: str, documents: list[dict[str, str]], limit: int) -> list[DenseMatch]:
-        response = self.index.search(
-            namespace=namespace,
-            query={"inputs": {"text": query}, "top_k": limit},
-            fields=["source_id", "title", "section"],
+        response = self._with_backoff(
+            lambda: self.index.search(
+                namespace=namespace,
+                query={"inputs": {"text": query}, "top_k": limit},
+                fields=["source_id", "title", "section"],
+            )
         )
         result = response.to_dict() if hasattr(response, "to_dict") else response
         hits = result.get("result", {}).get("hits", result.get("hits", []))

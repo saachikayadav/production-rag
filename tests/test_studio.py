@@ -4,6 +4,19 @@ from demand_lens.database import connect, initialize
 from demand_lens.studio import KnowledgeOpsStudio, chunk_text
 
 
+class RecordingVectorStore:
+    provider = "recording"
+
+    def __init__(self):
+        self.upserts = []
+
+    def upsert(self, namespace, documents):
+        self.upserts.append((namespace, documents))
+
+    def search(self, namespace, query, documents, limit):
+        return []
+
+
 @pytest.fixture()
 def studio():
     connection = connect()
@@ -51,6 +64,20 @@ def test_production_retrieval_returns_hybrid_results(studio):
     assert result["results"][0]["source_id"] == "forecast-metrics-1"
     assert "bm25_rank" in result["results"][0]
     assert "semantic_rank" in result["results"][0]
+
+
+def test_vector_sync_batches_documents():
+    connection = connect()
+    initialize(connection)
+    vector_store = RecordingVectorStore()
+    batched_studio = KnowledgeOpsStudio(connection, vector_store)
+    try:
+        result = batched_studio.sync_vector_store_batched(batch_size=2)
+        assert result["indexed_chunks"] == 5
+        assert result["total_chunks"] == 5
+        assert [len(batch) for _namespace, batch in vector_store.upserts] == [2, 2, 1]
+    finally:
+        connection.close()
 
 
 def test_prompt_injection_is_blocked_and_creates_incident(studio):

@@ -45,3 +45,24 @@ def test_pinecone_provider_uses_integrated_embedding_record_api():
     matches = store.search("workspace-1", "forecast bias", DOCUMENTS, 5)
     assert matches[0].chunk_id == "c1"
     assert store.index.searches[0]["query"]["inputs"]["text"] == "forecast bias"
+
+
+def test_pinecone_provider_retries_throttled_upserts(monkeypatch):
+    class ThrottledIndex:
+        def __init__(self):
+            self.calls = 0
+
+        def upsert_records(self, namespace, records):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("429 Too Many Requests RESOURCE_EXHAUSTED")
+
+    monkeypatch.setattr("demand_lens.vector_store.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("demand_lens.vector_store.random.uniform", lambda _start, _end: 0)
+    store = PineconeVectorStore.__new__(PineconeVectorStore)
+    store.index = ThrottledIndex()
+    store.text_field = "chunk_text"
+
+    store.upsert("workspace-1", DOCUMENTS)
+
+    assert store.index.calls == 2
