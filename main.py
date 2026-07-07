@@ -217,10 +217,28 @@ def studio_sync_vectors(request: Request):
         )
         return {"indexed_chunks": count, "provider": studio.vector_store.provider}
     except Exception as exc:
+        error_detail = f"{type(exc).__name__}: {str(exc)[:500]}"
         request.app.state.system_status.update(
-            {"vector_sync": "degraded", "vector_error": type(exc).__name__}
+            {"vector_sync": "degraded", "vector_error": error_detail}
         )
-        raise HTTPException(status_code=503, detail="Vector synchronization failed") from exc
+        logger.error(
+            "Vector synchronization failed",
+            extra={
+                "extra_data": {
+                    "provider": studio.vector_store.provider,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                }
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Vector synchronization failed",
+                "provider": studio.vector_store.provider,
+                "error": error_detail,
+            },
+        ) from exc
 
 
 @app.get("/api/studio/guardrails")
