@@ -60,7 +60,8 @@ jobs:
       - name: Run k6 retrieval test
         uses: grafana/run-k6-action@v1
         with:
-          path: ./load-tests/retrieval.js
+          path: |
+            ./load-tests/retrieval.js
           flags: >-
             --summary-export k6-retrieval-summary.json
             --env BASE_URL=${{ inputs.base_url }}
