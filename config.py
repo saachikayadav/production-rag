@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     pinecone_index_name: str = "groundwire-chunks"
     pinecone_namespace: str = "workspace-default"
     pinecone_text_field: str = "chunk_text"
+    dense_search_timeout_seconds: float = 8.0
     auto_vector_sync_on_startup: bool = False
 
     model_config = SettingsConfigDict(

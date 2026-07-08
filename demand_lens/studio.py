@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from .ingestion import ExtractedDocument, ExtractedSection
@@ -48,10 +49,17 @@ def chunk_text(text: str, size: int = 700, overlap: int = 100) -> list[str]:
 
 
 class KnowledgeOpsStudio:
-    def __init__(self, connection: Any, vector_store: VectorStore | None = None, namespace: str = "workspace-default"):
+    def __init__(
+        self,
+        connection: Any,
+        vector_store: VectorStore | None = None,
+        namespace: str = "workspace-default",
+        dense_search_timeout_seconds: float = 8.0,
+    ):
         self.connection = connection
         self.vector_store = vector_store or LocalVectorStore()
         self.namespace = namespace
+        self.dense_search_timeout_seconds = dense_search_timeout_seconds
 
     def _scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         row = self.connection.execute(sql, params).fetchone()
@@ -269,11 +277,11 @@ class KnowledgeOpsStudio:
         started = time.perf_counter()
         dense_provider = self.vector_store.provider
         try:
-            dense_matches = self.vector_store.search(self.namespace, query, documents, limit)
+            dense_matches = self._dense_search(query, documents, limit)
             by_id = {document["id"]: index for index, document in enumerate(documents)}
             semantic_raw = [(by_id[match.chunk_id], match.score) for match in dense_matches if match.chunk_id in by_id]
         except Exception as exc:
-            if not is_throttle_error(exc):
+            if not isinstance(exc, FuturesTimeoutError) and not is_throttle_error(exc):
                 raise
             dense_provider = f"{self.vector_store.provider};degraded=local-feature-hashing"
             semantic_raw = retriever._semantic(query)[:limit]
@@ -338,6 +346,20 @@ class KnowledgeOpsStudio:
             "retrieval_ms": round(retrieval_ms, 2),
             "provider": hybrid["provider"],
         }
+
+    def _dense_search(self, query: str, documents: list[dict[str, str]], limit: int):
+        if isinstance(self.vector_store, LocalVectorStore):
+            return self.vector_store.search(self.namespace, query, documents, limit)
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self.vector_store.search, self.namespace, query, documents, limit)
+        try:
+            return future.result(timeout=self.dense_search_timeout_seconds)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _finish_indexing(self, source_id: str) -> None:
         try:

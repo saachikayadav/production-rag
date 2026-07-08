@@ -61,7 +61,12 @@ async def lifespan(app: FastAPI):
         from demand_lens.database import initialize
         initialize(studio_db)
     vector_store = create_vector_store(settings)
-    studio = KnowledgeOpsStudio(studio_db, vector_store, settings.pinecone_namespace)
+    studio = KnowledgeOpsStudio(
+        studio_db,
+        vector_store,
+        settings.pinecone_namespace,
+        settings.dense_search_timeout_seconds,
+    )
     rag_orchestrator = AgenticRAGOrchestrator(studio)
 
     app.state.system_status = {

@@ -1,4 +1,5 @@
 import pytest
+import time
 
 from demand_lens.database import connect, initialize
 from demand_lens.studio import KnowledgeOpsStudio, chunk_text
@@ -25,6 +26,17 @@ class ThrottledVectorStore:
 
     def search(self, namespace, query, documents, limit):
         raise RuntimeError("429 Too Many Requests RESOURCE_EXHAUSTED")
+
+
+class SlowVectorStore:
+    provider = "pinecone-llama-text-embed-v2"
+
+    def upsert(self, namespace, documents):
+        return None
+
+    def search(self, namespace, query, documents, limit):
+        time.sleep(0.05)
+        return []
 
 
 @pytest.fixture()
@@ -85,6 +97,23 @@ def test_production_retrieval_degrades_when_dense_provider_is_throttled():
         assert result["provider"] == "pinecone-llama-text-embed-v2;degraded=local-feature-hashing"
         assert result["results"][0]["source_id"] == "forecast-metrics-1"
         assert result["results"][0]["semantic_rank"] is not None
+    finally:
+        connection.close()
+
+
+def test_production_retrieval_degrades_when_dense_provider_times_out():
+    connection = connect()
+    initialize(connection)
+    slow_studio = KnowledgeOpsStudio(
+        connection,
+        SlowVectorStore(),
+        dense_search_timeout_seconds=0.01,
+    )
+    try:
+        result = slow_studio.retrieve("How is forecast bias calculated?", limit=3)
+        assert result["provider"] == "pinecone-llama-text-embed-v2;degraded=local-feature-hashing"
+        assert result["results"][0]["source_id"] == "forecast-metrics-1"
+        assert result["retrieval_ms"] < 1000
     finally:
         connection.close()
 
