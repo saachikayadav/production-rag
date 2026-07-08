@@ -19,6 +19,10 @@ on:
         description: "Delay between each virtual user's requests"
         required: true
         default: "5"
+      fail_on_thresholds:
+        description: "Fail the workflow when k6 thresholds are exceeded"
+        required: true
+        default: "false"
 
 permissions:
   contents: read
@@ -59,6 +63,8 @@ jobs:
 
       - name: Run k6 retrieval test
         run: |
+          set +e
+
           k6 run \
             --summary-export k6-retrieval-summary.json \
             --env BASE_URL="${{ inputs.base_url }}" \
@@ -67,6 +73,15 @@ jobs:
             --env SLEEP_SECONDS="${{ inputs.sleep_seconds }}" \
             --env API_KEY="${{ secrets.K6_API_KEY }}" \
             load-tests/retrieval.js
+
+          k6_exit_code=$?
+
+          if [ "$k6_exit_code" -eq 99 ] && [ "${{ inputs.fail_on_thresholds }}" != "true" ]; then
+            echo "k6 completed, but one or more thresholds failed. Keeping the workflow green so you can inspect the summary artifact."
+            exit 0
+          fi
+
+          exit "$k6_exit_code"
 
       - name: Upload k6 summary
         uses: actions/upload-artifact@v4
