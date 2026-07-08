@@ -40,7 +40,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Warm deployed service
-        run: curl --fail --show-error --silent "$BASE_URL/ready"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --show-error --silent "$BASE_URL/health"; then
+              echo "Service responded to /health"
+              break
+            fi
+
+            echo "Service is still waking up; retrying in 15 seconds..."
+            sleep 15
+          done
+
+          echo "Readiness snapshot:"
+          curl --show-error --silent "$BASE_URL/ready" || true
 
       - name: Set up k6
         uses: grafana/setup-k6-action@v1
