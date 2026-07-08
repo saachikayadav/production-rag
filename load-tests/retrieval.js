@@ -9,6 +9,11 @@ const failures = new Rate("retrieval_failures");
 const vus = Number(__ENV.VUS || 25);
 const duration = __ENV.DURATION || "5m";
 const sleepSeconds = Number(__ENV.SLEEP_SECONDS || 2);
+const baseUrl = (__ENV.BASE_URL || "").replace(/\/$/, "");
+
+if (!baseUrl) {
+  throw new Error("BASE_URL is required, for example -e BASE_URL=https://production-rag-1.onrender.com");
+}
 
 export const options = {
   scenarios: {
@@ -43,26 +48,27 @@ export default function () {
   }
 
   const response = http.post(
-    `${__ENV.BASE_URL}/api/retrieve`,
+    `${baseUrl}/api/retrieve`,
     JSON.stringify({ query, limit: 5 }),
     { headers }
   );
 
+  let body;
+  try {
+    body = JSON.parse(response.body);
+  } catch {
+    body = {};
+  }
+
   const successful = check(response, {
     "status is 200": (r) => r.status === 200,
-    "contains results": (r) => {
-      try {
-        return JSON.parse(r.body).results.length > 0;
-      } catch {
-        return false;
-      }
-    },
+    "contains results": () => Array.isArray(body.results) && body.results.length > 0,
   });
 
   failures.add(!successful);
 
-  if (response.status === 200) {
-    retrievalLatency.add(JSON.parse(response.body).retrieval_ms);
+  if (response.status === 200 && typeof body.retrieval_ms === "number") {
+    retrievalLatency.add(body.retrieval_ms);
   }
 
   sleep(sleepSeconds);

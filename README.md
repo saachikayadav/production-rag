@@ -143,6 +143,16 @@ k6 run \
   load-tests/retrieval.js
 ```
 
+You can also run the same k6 script from GitHub Actions:
+
+1. Open the repository on GitHub.
+2. Go to **Actions**.
+3. Select **k6 retrieval benchmark**.
+4. Click **Run workflow**.
+5. Start with `vus=5`, `duration=1m`, and `sleep_seconds=5` on a 512 MB Render instance.
+
+The workflow writes a `k6-retrieval-summary` artifact after the run. If the deployed API later requires a bearer token, add a repository secret named `K6_API_KEY`; the workflow will pass it as the `Authorization: Bearer ...` header.
+
 To create a public-demo-safe synthetic corpus before testing:
 
 ```bash

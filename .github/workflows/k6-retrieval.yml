@@ -1,0 +1,67 @@
+name: k6 retrieval benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Deployed API origin, without a trailing slash"
+        required: true
+        default: "https://production-rag-1.onrender.com"
+      vus:
+        description: "Virtual users. Keep low on 512 MB Render instances."
+        required: true
+        default: "5"
+      duration:
+        description: "Test duration, for example 1m, 2m, or 5m"
+        required: true
+        default: "1m"
+      sleep_seconds:
+        description: "Delay between each virtual user's requests"
+        required: true
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k6-retrieval-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  retrieval:
+    name: Run retrieval load test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Warm deployed service
+        run: curl --fail --show-error --silent "$BASE_URL/ready"
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 retrieval test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: ./load-tests/retrieval.js
+          flags: >-
+            --summary-export k6-retrieval-summary.json
+            --env BASE_URL=${{ inputs.base_url }}
+            --env VUS=${{ inputs.vus }}
+            --env DURATION=${{ inputs.duration }}
+            --env SLEEP_SECONDS=${{ inputs.sleep_seconds }}
+            --env API_KEY=${{ secrets.K6_API_KEY }}
+          fail-fast: true
+
+      - name: Upload k6 summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-retrieval-summary
+          path: k6-retrieval-summary.json
+          if-no-files-found: ignore
