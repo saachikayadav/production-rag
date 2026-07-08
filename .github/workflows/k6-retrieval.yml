@@ -23,6 +23,10 @@ on:
         description: "Fail the workflow when k6 thresholds are exceeded"
         required: true
         default: "false"
+      debug_failures:
+        description: "Print failed response status and body snippets"
+        required: true
+        default: "true"
 
 permissions:
   contents: read
@@ -72,6 +76,7 @@ jobs:
             --env DURATION="${{ inputs.duration }}" \
             --env SLEEP_SECONDS="${{ inputs.sleep_seconds }}" \
             --env API_KEY="${{ secrets.K6_API_KEY }}" \
+            --env DEBUG_FAILURES="${{ inputs.debug_failures }}" \
             load-tests/retrieval.js
 
           k6_exit_code=$?

@@ -10,6 +10,7 @@ const vus = Number(__ENV.VUS || 25);
 const duration = __ENV.DURATION || "5m";
 const sleepSeconds = Number(__ENV.SLEEP_SECONDS || 2);
 const baseUrl = (__ENV.BASE_URL || "").replace(/\/$/, "");
+const debugFailures = (__ENV.DEBUG_FAILURES || "true") === "true";
 
 if (!baseUrl) {
   throw new Error("BASE_URL is required, for example -e BASE_URL=https://production-rag-1.onrender.com");
@@ -50,7 +51,7 @@ export default function () {
   const response = http.post(
     `${baseUrl}/api/retrieve`,
     JSON.stringify({ query, limit: 5 }),
-    { headers }
+    { headers, timeout: "70s" }
   );
 
   let body;
@@ -64,6 +65,17 @@ export default function () {
     "status is 200": (r) => r.status === 200,
     "contains results": () => Array.isArray(body.results) && body.results.length > 0,
   });
+
+  if (!successful && debugFailures) {
+    console.error(
+      JSON.stringify({
+        status: response.status,
+        error: response.error || null,
+        query,
+        body: String(response.body || "").slice(0, 500),
+      })
+    );
+  }
 
   failures.add(!successful);
 
