@@ -48,7 +48,7 @@ class HybridRetriever:
         self.documents = documents
         self.rrf_k = rrf_k
         self.tokens = [tokenize(doc["content"] + " " + doc["title"]) for doc in documents]
-        self.embeddings = [hashed_embedding(doc["content"] + " " + doc["title"]) for doc in documents]
+        self.embeddings: list[list[float]] | None = None
         self.doc_freq = Counter(token for tokens in self.tokens for token in set(tokens))
         self.avg_length = sum(map(len, self.tokens)) / max(len(self.tokens), 1)
 
@@ -69,6 +69,8 @@ class HybridRetriever:
         return sorted(scores, key=lambda item: item[1], reverse=True)
 
     def _semantic(self, query: str) -> list[tuple[int, float]]:
+        if self.embeddings is None:
+            self.embeddings = [hashed_embedding(doc["content"] + " " + doc["title"]) for doc in self.documents]
         query_vector = hashed_embedding(query)
         return sorted(
             [(index, cosine(query_vector, vector)) for index, vector in enumerate(self.embeddings)],

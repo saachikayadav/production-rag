@@ -12,7 +12,7 @@ from typing import Any
 
 from .ingestion import ExtractedDocument, ExtractedSection
 from .retrieval import HybridRetriever, tokenize
-from .vector_store import LocalVectorStore, VectorStore
+from .vector_store import LocalVectorStore, VectorStore, is_throttle_error
 
 
 INJECTION_PATTERNS = [
@@ -267,9 +267,16 @@ class KnowledgeOpsStudio:
         bm25_raw = retriever._bm25(query)[:limit]
         bm25_ms = (time.perf_counter() - started) * 1000
         started = time.perf_counter()
-        dense_matches = self.vector_store.search(self.namespace, query, documents, limit)
-        by_id = {document["id"]: index for index, document in enumerate(documents)}
-        semantic_raw = [(by_id[match.chunk_id], match.score) for match in dense_matches if match.chunk_id in by_id]
+        dense_provider = self.vector_store.provider
+        try:
+            dense_matches = self.vector_store.search(self.namespace, query, documents, limit)
+            by_id = {document["id"]: index for index, document in enumerate(documents)}
+            semantic_raw = [(by_id[match.chunk_id], match.score) for match in dense_matches if match.chunk_id in by_id]
+        except Exception as exc:
+            if not is_throttle_error(exc):
+                raise
+            dense_provider = f"{self.vector_store.provider};degraded=local-feature-hashing"
+            semantic_raw = retriever._semantic(query)[:limit]
         semantic_ms = (time.perf_counter() - started) * 1000
         started = time.perf_counter()
         bm25_ranks = {index: rank for rank, (index, _score) in enumerate(bm25_raw, 1)}
@@ -303,7 +310,7 @@ class KnowledgeOpsStudio:
             "hybrid": {
                 "latency_ms": round(hybrid_ms, 2),
                 "weights": {"bm25": 0.45, "semantic": 0.55, "rrf_k": 60},
-                "provider": self.vector_store.provider,
+                "provider": dense_provider,
                 "results": [
                     {
                         "rank": rank,

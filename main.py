@@ -67,11 +67,11 @@ async def lifespan(app: FastAPI):
     app.state.system_status = {
         "database": getattr(studio_db, "dialect", "sqlite"),
         "vector_store": vector_store.provider,
-        "vector_sync": "starting",
+        "vector_sync": "starting" if settings.auto_vector_sync_on_startup else "skipped",
         "indexed_chunks": 0,
         "total_chunks": 0,
         "batch_size": 100,
-        "vector_error": None,
+        "vector_error": None if settings.auto_vector_sync_on_startup else "Startup vector sync disabled; run /api/studio/vector/sync when needed.",
     }
 
     async def sync_vectors_without_blocking_startup():
@@ -99,16 +99,24 @@ async def lifespan(app: FastAPI):
                 extra={"extra_data": {"error_type": type(exc).__name__, "error_message": str(exc)[:500]}},
             )
 
-    app.state.vector_sync_task = asyncio.create_task(sync_vectors_without_blocking_startup())
+    app.state.vector_sync_task = None
+    if settings.auto_vector_sync_on_startup:
+        app.state.vector_sync_task = asyncio.create_task(sync_vectors_without_blocking_startup())
 
     logger.info(
         "All components initialized. Ready to serve requests.",
-        extra={"extra_data": {"persistence": getattr(studio_db, "dialect", "sqlite"), "vector_store": vector_store.provider, "vector_sync": "background"}},
+        extra={
+            "extra_data": {
+                "persistence": getattr(studio_db, "dialect", "sqlite"),
+                "vector_store": vector_store.provider,
+                "vector_sync": "background" if settings.auto_vector_sync_on_startup else "skipped",
+            }
+        },
     )
 
     yield
 
-    if not app.state.vector_sync_task.done():
+    if app.state.vector_sync_task and not app.state.vector_sync_task.done():
         app.state.vector_sync_task.cancel()
     if hasattr(studio_db, "close"):
         studio_db.close()
@@ -334,17 +342,41 @@ def studio_agentic_query(body: AgenticRAGQuery):
 
 @app.post("/api/studio/assistant")
 def studio_knowledge_assistant(body: StudioQuery):
-    guard_result = studio.guarded_query(body.question)
-    if guard_result["status"] != "answered":
-        message = (
-            "This question was blocked by a safety rule."
-            if guard_result["status"] == "blocked"
-            else "I could not find enough evidence in your uploaded knowledge to answer that safely."
+    request_id = f"req-{uuid.uuid4().hex[:12]}"
+    try:
+        guard_result = studio.guarded_query(body.question)
+        if guard_result["status"] != "answered":
+            message = (
+                "This question was blocked by a safety rule."
+                if guard_result["status"] == "blocked"
+                else "I could not find enough evidence in your uploaded knowledge to answer that safely."
+            )
+            return {**guard_result, "answer": message, "citations": [], "trace": guard_result["events"], "request_id": request_id}
+        result = rag_orchestrator.run(guard_result["processed_question"])
+        result["guardrail_events"] = guard_result["events"]
+        result["request_id"] = request_id
+        return result
+    except Exception as exc:
+        logger.error(
+            "Knowledge assistant failed",
+            extra={
+                "extra_data": {
+                    "request_id": request_id,
+                    "provider": getattr(studio.vector_store, "provider", "unknown"),
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:500],
+                }
+            },
         )
-        return {**guard_result, "answer": message, "citations": [], "trace": guard_result["events"]}
-    result = rag_orchestrator.run(guard_result["processed_question"])
-    result["guardrail_events"] = guard_result["events"]
-    return result
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Knowledge assistant failed",
+                "provider": getattr(studio.vector_store, "provider", "unknown"),
+                "request_id": request_id,
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            },
+        ) from exc
 
 
 @app.get("/api/studio/evaluations")
@@ -396,7 +428,7 @@ async def health():
 @app.get("/ready")
 async def readiness(request: Request):
     status = request.app.state.system_status
-    ready = status["database"] in {"sqlite", "postgresql"} and status["vector_sync"] == "ready"
+    ready = status["database"] in {"sqlite", "postgresql"} and status["vector_sync"] in {"ready", "skipped"}
     return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, **status})
 
 @app.get("/metrics", response_model=MetricsResponse)

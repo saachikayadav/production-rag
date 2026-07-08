@@ -38,6 +38,24 @@ def test_hybrid_retrieval_exposes_rrf_provenance(connection):
     assert results[0].fused_score > 0
 
 
+def test_hybrid_retriever_builds_embeddings_lazily(connection):
+    documents = [
+        {
+            "id": row["document_id"],
+            "title": row["title"],
+            "section": row["section"],
+            "content": row["content"],
+            "source_type": "policy",
+        }
+        for row in connection.execute("SELECT * FROM planning_documents")
+    ]
+    retriever = HybridRetriever(documents)
+    retriever._bm25("How is forecast bias calculated?")
+    assert retriever.embeddings is None
+    retriever._semantic("How is forecast bias calculated?")
+    assert retriever.embeddings is not None
+
+
 def test_text_to_sql_finds_deliberate_forecast_anomaly(connection):
     plan = compile_question("Which region has the largest forecast miss for Model Beta?")
     result = SafeSQLExecutor(connection).execute(plan)

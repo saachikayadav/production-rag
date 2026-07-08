@@ -11,6 +11,12 @@ from typing import Protocol
 from .retrieval import cosine, hashed_embedding
 
 
+def is_throttle_error(exc: Exception) -> bool:
+    message = str(exc)
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    return status == 429 or "429" in message or "Too Many Requests" in message or "RESOURCE_EXHAUSTED" in message
+
+
 @dataclass(frozen=True)
 class DenseMatch:
     chunk_id: str
@@ -51,9 +57,7 @@ class PineconeVectorStore:
 
     @staticmethod
     def _is_throttle_error(exc: Exception) -> bool:
-        message = str(exc)
-        status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
-        return status == 429 or "429" in message or "Too Many Requests" in message or "RESOURCE_EXHAUSTED" in message
+        return is_throttle_error(exc)
 
     def _with_backoff(self, operation: Callable, *, attempts: int = 5):
         for attempt in range(1, attempts + 1):

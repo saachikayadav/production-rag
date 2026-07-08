@@ -17,6 +17,16 @@ class RecordingVectorStore:
         return []
 
 
+class ThrottledVectorStore:
+    provider = "pinecone-llama-text-embed-v2"
+
+    def upsert(self, namespace, documents):
+        return None
+
+    def search(self, namespace, query, documents, limit):
+        raise RuntimeError("429 Too Many Requests RESOURCE_EXHAUSTED")
+
+
 @pytest.fixture()
 def studio():
     connection = connect()
@@ -64,6 +74,19 @@ def test_production_retrieval_returns_hybrid_results(studio):
     assert result["results"][0]["source_id"] == "forecast-metrics-1"
     assert "bm25_rank" in result["results"][0]
     assert "semantic_rank" in result["results"][0]
+
+
+def test_production_retrieval_degrades_when_dense_provider_is_throttled():
+    connection = connect()
+    initialize(connection)
+    throttled_studio = KnowledgeOpsStudio(connection, ThrottledVectorStore())
+    try:
+        result = throttled_studio.retrieve("How is forecast bias calculated?", limit=3)
+        assert result["provider"] == "pinecone-llama-text-embed-v2;degraded=local-feature-hashing"
+        assert result["results"][0]["source_id"] == "forecast-metrics-1"
+        assert result["results"][0]["semantic_rank"] is not None
+    finally:
+        connection.close()
 
 
 def test_vector_sync_batches_documents():
