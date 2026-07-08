@@ -58,18 +58,15 @@ jobs:
         uses: grafana/setup-k6-action@v1
 
       - name: Run k6 retrieval test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: |
-            ./load-tests/retrieval.js
-          flags: >-
-            --summary-export k6-retrieval-summary.json
-            --env BASE_URL=${{ inputs.base_url }}
-            --env VUS=${{ inputs.vus }}
-            --env DURATION=${{ inputs.duration }}
-            --env SLEEP_SECONDS=${{ inputs.sleep_seconds }}
-            --env API_KEY=${{ secrets.K6_API_KEY }}
-          fail-fast: true
+        run: |
+          k6 run \
+            --summary-export k6-retrieval-summary.json \
+            --env BASE_URL="${{ inputs.base_url }}" \
+            --env VUS="${{ inputs.vus }}" \
+            --env DURATION="${{ inputs.duration }}" \
+            --env SLEEP_SECONDS="${{ inputs.sleep_seconds }}" \
+            --env API_KEY="${{ secrets.K6_API_KEY }}" \
+            load-tests/retrieval.js
 
       - name: Upload k6 summary
         uses: actions/upload-artifact@v4
